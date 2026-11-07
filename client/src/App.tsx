@@ -50,7 +50,7 @@ export const App: React.FC = () => {
               <Route path="/problems/:idOrSlug" element={<ProblemWorkspacePage />} />
 
               {/* Private Protected Student Routes (Requires Sign In / Sign Up) */}
-              {/* AI Resume Interview Experience (thita.ai Engine) */}
+              {/* AI Interview Experience (Voice & Text) */}
               <Route
                 path="/ai-interview"
                 element={
@@ -100,6 +100,22 @@ export const App: React.FC = () => {
                 }
               />
               <Route
+                path="/ai-interview/:id/result"
+                element={
+                  <ProtectedRoute>
+                    <MockInterviewResultPage />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/ai-interview/:id/results"
+                element={
+                  <ProtectedRoute>
+                    <MockInterviewResultPage />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
                 path="/ai-interview/:id/report"
                 element={
                   <ProtectedRoute>
@@ -109,6 +125,14 @@ export const App: React.FC = () => {
               />
               <Route
                 path="/interviews/:id/results"
+                element={
+                  <ProtectedRoute>
+                    <MockInterviewResultPage />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/interviews/:id/result"
                 element={
                   <ProtectedRoute>
                     <MockInterviewResultPage />

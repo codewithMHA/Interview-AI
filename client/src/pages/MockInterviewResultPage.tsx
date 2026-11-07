@@ -64,7 +64,7 @@ export const MockInterviewResultPage: React.FC = () => {
       <div className="max-w-4xl mx-auto px-4 py-20 flex flex-col items-center justify-center gap-3">
         <span className="w-10 h-10 border-4 border-indigo-500/30 border-t-indigo-500 rounded-full animate-spin" />
         <p className="text-sm font-semibold text-slate-500 dark:text-slate-400">
-          Generating Comprehensive thita.ai Placement Report...
+          Generating Comprehensive AI Placement Report...
         </p>
       </div>
     );

@@ -381,7 +381,7 @@ export const MockInterviewSessionPage: React.FC = () => {
         // Complete interview session naturally
         const closing =
           result?.interviewerSpeech ||
-          `Thank you Mohammed. That gives me a thorough understanding of your technical background and projects. I am preparing your performance evaluation report now.`;
+          `Thank you ${user?.name || 'Mohammed Hassan Ahmed'}. That gives me a thorough understanding of your technical background and projects. I am preparing your performance evaluation report now.`;
         speakInterviewerSpeech(closing, () => {
           handleEndSession();
         });
@@ -1066,7 +1066,7 @@ export const MockInterviewSessionPage: React.FC = () => {
                   }`}
                 >
                   <div className="flex items-center justify-between text-[10px] text-slate-400 font-bold">
-                    <span>{msg.sender === 'interviewer' ? 'Emily Zhou' : 'You (Mohammed)'}</span>
+                    <span>{msg.sender === 'interviewer' ? 'Emily Zhou' : `You (${user?.name || 'Mohammed Hassan Ahmed'})`}</span>
                     <span>{msg.time}</span>
                   </div>
                   <p className="leading-relaxed">{msg.text}</p>

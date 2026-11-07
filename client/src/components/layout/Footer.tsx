@@ -43,7 +43,7 @@ export const Footer: React.FC = () => {
               Placement Modules
             </h4>
             <ul className="space-y-2.5 text-sm text-slate-600 dark:text-slate-400">
-              <li><Link to="/ai-interview" className="hover:text-brand-500 transition-colors font-medium text-indigo-600 dark:text-indigo-400">AI Resume Interview (Voice)</Link></li>
+              <li><Link to="/ai-interview" className="hover:text-brand-500 transition-colors font-medium text-indigo-600 dark:text-indigo-400">AI Interview (Voice)</Link></li>
               <li><Link to="/coding" className="hover:text-brand-500 transition-colors">DSA & Coding Sandbox</Link></li>
               <li><Link to="/practice-sandbox" className="hover:text-brand-500 transition-colors">Judge0 Code Playground</Link></li>
               <li><Link to="/placement-modules" className="hover:text-brand-500 transition-colors">Placement Engineering Tracks</Link></li>
