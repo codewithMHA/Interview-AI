@@ -172,17 +172,16 @@ export class AIService {
       return null;
     }
 
-    // Try Google's active recommended lightweight models with a 6500ms budget
+    // Try Google's ultra-fast flash models with a strict 2200ms budget to guarantee conversational responsiveness
     const candidateModels = [
-      'gemini-3.5-flash-lite',
-      'gemini-flash-latest',
-      'gemini-3.8-flash',
+      'gemini-2.5-flash',
+      'gemini-1.5-flash',
     ];
 
     for (const model of candidateModels) {
       try {
         const timeoutPromise = new Promise<null>((_, reject) =>
-          setTimeout(() => reject(new Error('AI_TIMEOUT_EXCEEDED')), 6500)
+          setTimeout(() => reject(new Error('AI_TIMEOUT_EXCEEDED')), 2200)
         );
 
         const generatePromise = client.models.generateContent({
@@ -219,7 +218,7 @@ export class AIService {
           let shortReason = err.message?.includes('503') || err.message?.includes('high demand')
             ? 'Cloud AI model overloaded (503 High Demand)'
             : err.message?.includes('AI_TIMEOUT_EXCEEDED')
-            ? 'Cloud AI timeout (>6500ms)'
+            ? 'Cloud AI timeout (>2200ms)'
             : 'Cloud AI network unavailable';
           console.log(`[AIService] ${shortReason}. Tripping Circuit Breaker for 15s. Using instant high-precision engine.`);
           break; // Stop immediately; don't make user wait on secondary models

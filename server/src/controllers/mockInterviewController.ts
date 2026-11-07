@@ -93,8 +93,8 @@ export const startInterview = async (
       ];
     }
 
-    // Generate initial structured questions based on configuration and interview stages
-    const generatedQuestions = await AIService.generateMockQuestions({
+    // Generate initial structured questions based on configuration and interview stages (with strict 2.5s race timeout)
+    const questionGenPromise = AIService.generateMockQuestions({
       title: title || `${company ? company + ' ' : ''}${role} ${interviewType} Interview`,
       role,
       experienceLevel,
@@ -108,6 +108,14 @@ export const startInterview = async (
       targetJD: jobDescription || '',
       roundType: interviewType.toLowerCase().replace(/\s+/g, '_'),
     });
+
+    const instantFallbackTimer = new Promise<any[]>((resolve) =>
+      setTimeout(() => {
+        resolve((AIService as any).fallbackMockQuestions(role, difficulty, interviewType, count));
+      }, 2500)
+    );
+
+    const generatedQuestions = await Promise.race([questionGenPromise, instantFallbackTimer]);
 
     // Assign stages (Stage 1: Intro, Stage 2: Main, Stage 3: Followup, Stage 4: Scenario, Stage 5: Wrapup)
     const stages: Array<'introduction' | 'main' | 'followup' | 'scenario' | 'wrapup'> = [

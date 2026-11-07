@@ -882,14 +882,6 @@ export const MockInterviewSessionPage: React.FC = () => {
                 </div>
               )}
 
-              {/* Evaluating Shimmer Overlay */}
-              {conversationState === 'evaluating' && (
-                <div className="absolute inset-0 bg-black/50 backdrop-blur-[2px] flex flex-col items-center justify-center p-3 text-center">
-                  <span className="w-6 h-6 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin mb-1.5" />
-                  <span className="text-[10px] font-bold text-white">Analyzing response...</span>
-                </div>
-              )}
-
               {/* Live Status Pill Top Right */}
               <div className="absolute top-2 right-2 px-2 py-0.5 rounded-full bg-black/75 backdrop-blur-md text-[10px] font-bold text-emerald-400 flex items-center gap-1">
                 <span
@@ -897,7 +889,7 @@ export const MockInterviewSessionPage: React.FC = () => {
                     conversationState === 'interviewer_speaking'
                       ? 'bg-emerald-400 animate-ping'
                       : conversationState === 'evaluating'
-                      ? 'bg-amber-400 animate-spin'
+                      ? 'bg-amber-400 animate-pulse'
                       : 'bg-emerald-400'
                   }`}
                 />

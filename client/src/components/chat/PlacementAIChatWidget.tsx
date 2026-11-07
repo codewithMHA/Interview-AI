@@ -278,7 +278,7 @@ export const PlacementAIChatWidget: React.FC = () => {
   return (
     <>
       {/* 1. Floating Launcher Button */}
-      <div className="fixed bottom-6 right-6 z-50">
+      <div className="fixed bottom-6 right-6 z-50 no-print">
         {!isOpen ? (
           <button
             onClick={() => setIsOpen(true)}
@@ -306,7 +306,7 @@ export const PlacementAIChatWidget: React.FC = () => {
       {/* 2. Floating AI Chat Drawer */}
       {isOpen && (
         <div
-          className={`fixed z-50 transition-all duration-300 ease-out shadow-2xl flex flex-col overflow-hidden bg-white/95 dark:bg-slate-900/95 backdrop-blur-2xl border border-slate-200/90 dark:border-slate-800/90 ${
+          className={`fixed z-50 transition-all duration-300 ease-out shadow-2xl flex flex-col overflow-hidden bg-white/95 dark:bg-slate-900/95 backdrop-blur-2xl border border-slate-200/90 dark:border-slate-800/90 no-print ${
             isExpanded
               ? 'inset-4 md:inset-8 rounded-3xl'
               : 'bottom-4 right-4 md:bottom-6 md:right-6 w-[430px] max-w-[calc(100vw-24px)] h-[620px] max-h-[calc(100vh-48px)] rounded-3xl'
