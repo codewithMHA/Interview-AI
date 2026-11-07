@@ -88,22 +88,12 @@ export const MockInterviewSessionPage: React.FC = () => {
   // Conversational State matching Photo 4 ("Connected · Interviewer speaking" / "Connected · Listening to you")
   const [conversationState, setConversationState] = useState<ConversationState>('connecting');
   const [currentInterviewerCaption, setCurrentInterviewerCaption] = useState<string>('');
-  const [interviewerMouthShape, setInterviewerMouthShape] = useState<number>(0);
 
-  // Dynamic Lip-Sync Mouth Shapes for Emily Zhou while speaking
-  useEffect(() => {
-    if (conversationState !== 'interviewer_speaking') {
-      setInterviewerMouthShape(0);
-      return;
-    }
-    const interval = setInterval(() => {
-      setInterviewerMouthShape((prev) => {
-        const next = Math.floor(Math.random() * 4);
-        return next === prev ? (next + 1) % 4 : next;
-      });
-    }, 110);
-    return () => clearInterval(interval);
-  }, [conversationState]);
+  // Silence detection & fast auto-submit states
+  const [pauseCountdown, setPauseCountdown] = useState<number | null>(null);
+  const pauseIntervalRef = useRef<any>(null);
+  const isSubmittingAnswerRef = useRef<boolean>(false);
+  const lastSpokenTextSnapshotRef = useRef<string>('');
 
   // Resume Topics (8 Cards from Photo 4)
   const [resumeTopics, setResumeTopics] = useState<ResumeTopicItem[]>([]);
@@ -235,12 +225,17 @@ export const MockInterviewSessionPage: React.FC = () => {
     setMicVolumeLevel(0);
   };
 
-  // 3. Clear Silence Timer
+  // 3. Clear Silence Timer & Countdown
   const clearSilenceTimer = useCallback(() => {
     if (silenceTimerRef.current) {
       clearTimeout(silenceTimerRef.current);
       silenceTimerRef.current = null;
     }
+    if (pauseIntervalRef.current) {
+      clearInterval(pauseIntervalRef.current);
+      pauseIntervalRef.current = null;
+    }
+    setPauseCountdown(null);
   }, []);
 
   // 4. Start & Stop Mic
@@ -310,13 +305,16 @@ export const MockInterviewSessionPage: React.FC = () => {
   // 6. Automatic Continuous Dialogue Processing (Candidate finishes speaking -> Emily responds!)
   const handleAutoProcessCandidateAnswer = useCallback(async () => {
     clearSilenceTimer();
+    if (isSubmittingAnswerRef.current) return;
+
     const spoken = latestSpokenAnswerRef.current.trim();
-    if (!spoken || spoken.length < 3) return;
+    if (!spoken || spoken.length < 2) return;
 
     if (!session || !id) return;
     const currentQ = session.questions[currentQuestionIndex];
     if (!currentQ) return;
 
+    isSubmittingAnswerRef.current = true;
     setConversationState('evaluating');
     stopMicListening();
 
@@ -352,6 +350,7 @@ export const MockInterviewSessionPage: React.FC = () => {
       setUserSpokenAnswer('');
       setInterimTranscript('');
       latestSpokenAnswerRef.current = '';
+      lastSpokenTextSnapshotRef.current = '';
 
       // 4. Check if more questions remain
       if (!result?.isCompleted && currentQuestionIndex + 1 < session.questions.length) {
@@ -389,6 +388,8 @@ export const MockInterviewSessionPage: React.FC = () => {
     } catch (err) {
       console.error('Error in conversation step:', err);
       startMicListening();
+    } finally {
+      isSubmittingAnswerRef.current = false;
     }
   }, [
     session,
@@ -433,15 +434,40 @@ export const MockInterviewSessionPage: React.FC = () => {
       }
       setInterimTranscript(interim);
 
-      // Natural silence detection: candidate speaks, then pauses for 4 seconds -> Emily takes over
-      clearSilenceTimer();
       const currentFullText = (latestSpokenAnswerRef.current + ' ' + interim).trim();
       const wordCount = currentFullText.split(/\s+/).filter(Boolean).length;
 
-      if (wordCount >= 3) {
+      // Smart silence detection: only reset and re-arm timer when NEW speech content arrives
+      if (currentFullText !== lastSpokenTextSnapshotRef.current) {
+        lastSpokenTextSnapshotRef.current = currentFullText;
+        clearSilenceTimer();
+
+        if (wordCount >= 2) {
+          setPauseCountdown(2);
+          pauseIntervalRef.current = setInterval(() => {
+            setPauseCountdown((prev) => {
+              if (prev === null || prev <= 1) {
+                if (pauseIntervalRef.current) clearInterval(pauseIntervalRef.current);
+                return null;
+              }
+              return prev - 1;
+            });
+          }, 1000);
+
+          silenceTimerRef.current = setTimeout(() => {
+            handleAutoProcessCandidateAnswer();
+          }, 2000); // 2.0-second crisp natural silence
+        }
+      }
+    };
+
+    recognition.onspeechend = () => {
+      const currentFullText = latestSpokenAnswerRef.current.trim();
+      if (currentFullText.split(/\s+/).filter(Boolean).length >= 2 && !silenceTimerRef.current) {
+        setPauseCountdown(1);
         silenceTimerRef.current = setTimeout(() => {
           handleAutoProcessCandidateAnswer();
-        }, 4000); // 4-second natural conversational silence
+        }, 1200);
       }
     };
 
@@ -817,61 +843,25 @@ export const MockInterviewSessionPage: React.FC = () => {
             ----------------------------------------------------------------------- */}
         <section className="col-span-12 lg:col-span-3 bg-[#0e0f17] flex flex-col p-4 gap-4 h-full overflow-y-auto pb-24">
           
-          {/* 1. Emily Zhou Interviewer Video Tile (Photo 4 Top Right - Talking Lifelike Video) */}
+          {/* 1. Emily Zhou Interviewer Video Tile (Photo 4 Top Right - Clean Static Portrait) */}
           <div className="rounded-2xl border border-slate-800 bg-[#12131f] overflow-hidden shadow-lg shrink-0">
             <div className="relative aspect-video w-full bg-slate-950 flex items-center justify-center overflow-hidden">
-              {/* Animated Interviewer Container */}
-              <div
-                className={`w-full h-full relative transition-all duration-300 ${
-                  conversationState === 'interviewer_speaking'
-                    ? 'animate-interviewer-talk scale-105'
-                    : conversationState === 'listening'
-                    ? 'animate-interviewer-nod'
-                    : 'animate-avatar-breathe'
-                }`}
-              >
+              {/* Completely Static Crisp Interviewer Photo - No Shaking or Movement */}
+              <div className="w-full h-full relative overflow-hidden bg-slate-950">
                 <img
                   src={
                     session?.interviewerAvatar ||
                     'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?w=800&auto=format&fit=crop&q=80'
                   }
                   alt={session?.interviewerName || 'Emily Zhou'}
-                  className="w-full h-full object-cover object-top select-none"
+                  className="w-full h-full object-cover object-top select-none pointer-events-none"
                 />
-
-                {/* Natural Eye Blink Overlay */}
-                <div className="absolute top-[38%] left-[38%] w-[24%] h-[8px] flex justify-between pointer-events-none animate-avatar-blink">
-                  <div className="w-[11px] h-[2.5px] bg-slate-900/70 rounded-full" />
-                  <div className="w-[11px] h-[2.5px] bg-slate-900/70 rounded-full" />
-                </div>
-
-                {/* Dynamic Lip-Sync Mouth Overlay while Interviewer Speaks */}
-                {conversationState === 'interviewer_speaking' && (
-                  <div className="absolute top-[65%] left-[50%] -translate-x-1/2 flex items-center justify-center pointer-events-none">
-                    {interviewerMouthShape === 0 && (
-                      <div className="w-5 h-[2px] bg-rose-950 rounded-full border-t border-rose-800/80 transition-all duration-75" />
-                    )}
-                    {interviewerMouthShape === 1 && (
-                      <div className="w-6 h-1.5 bg-gradient-to-b from-stone-900 to-rose-950 rounded-full border border-rose-800/60 transition-all duration-75 flex items-center justify-center">
-                        <div className="w-3.5 h-0.5 bg-white/40 rounded-full" />
-                      </div>
-                    )}
-                    {interviewerMouthShape === 2 && (
-                      <div className="w-7 h-2.5 bg-gradient-to-b from-stone-900 via-rose-950 to-stone-950 rounded-[40%] border border-rose-800 transition-all duration-75 flex items-center justify-center">
-                        <div className="w-4 h-0.5 bg-white/50 rounded-full" />
-                      </div>
-                    )}
-                    {interviewerMouthShape === 3 && (
-                      <div className="w-4.5 h-2.5 bg-gradient-to-b from-stone-950 to-rose-950 rounded-full border border-rose-800 transition-all duration-75" />
-                    )}
-                  </div>
-                )}
               </div>
 
               {/* Pulsing Speaking Wave Ring when Emily is speaking */}
               {conversationState === 'interviewer_speaking' && (
                 <>
-                  <div className="absolute inset-0 border-3 border-emerald-500/80 rounded-2xl animate-pulse pointer-events-none" />
+                  <div className="absolute inset-0 border-2 border-emerald-500/80 rounded-2xl pointer-events-none" />
                   {/* Dancing Live Audio Equalizer Waveform Overlay */}
                   <div className="absolute bottom-2 left-2 flex items-end gap-1 px-2.5 py-1 rounded-full bg-black/80 backdrop-blur-md">
                     <span className="w-0.5 bg-emerald-400 rounded-full animate-bounce h-2.5" />
@@ -892,19 +882,31 @@ export const MockInterviewSessionPage: React.FC = () => {
                 </div>
               )}
 
+              {/* Evaluating Shimmer Overlay */}
+              {conversationState === 'evaluating' && (
+                <div className="absolute inset-0 bg-black/50 backdrop-blur-[2px] flex flex-col items-center justify-center p-3 text-center">
+                  <span className="w-6 h-6 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin mb-1.5" />
+                  <span className="text-[10px] font-bold text-white">Analyzing response...</span>
+                </div>
+              )}
+
               {/* Live Status Pill Top Right */}
               <div className="absolute top-2 right-2 px-2 py-0.5 rounded-full bg-black/75 backdrop-blur-md text-[10px] font-bold text-emerald-400 flex items-center gap-1">
                 <span
                   className={`w-1.5 h-1.5 rounded-full ${
-                    conversationState === 'interviewer_speaking' ? 'bg-emerald-400 animate-ping' : 'bg-slate-400'
+                    conversationState === 'interviewer_speaking'
+                      ? 'bg-emerald-400 animate-ping'
+                      : conversationState === 'evaluating'
+                      ? 'bg-amber-400 animate-spin'
+                      : 'bg-emerald-400'
                   }`}
                 />
                 <span>
                   {conversationState === 'interviewer_speaking'
                     ? 'Speaking'
-                    : conversationState === 'listening'
-                    ? 'Listening'
-                    : 'Thinking'}
+                    : conversationState === 'evaluating'
+                    ? 'Thinking'
+                    : 'Listening'}
                 </span>
               </div>
             </div>
@@ -957,13 +959,26 @@ export const MockInterviewSessionPage: React.FC = () => {
             </div>
           </div>
 
-          {/* Current Spoken Transcript Streaming Preview */}
-          <div className="p-3 rounded-xl bg-slate-900/60 border border-slate-800 text-[11px] space-y-1">
-            <span className="text-[10px] font-bold uppercase text-slate-400 block">
-              Live Voice Feed
-            </span>
+          {/* Current Spoken Transcript Streaming Preview with Instant "Done Speaking" Action */}
+          <div className="p-3 rounded-xl bg-slate-900/60 border border-slate-800 text-[11px] space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-bold uppercase text-slate-400 block">
+                Live Voice Feed
+              </span>
+              {pauseCountdown !== null && pauseCountdown > 0 && (
+                <span className="text-[10px] font-bold text-amber-400 animate-pulse">
+                  Auto-sending in {pauseCountdown}s...
+                </span>
+              )}
+            </div>
+
             <p className="text-slate-300 leading-relaxed font-sans min-h-[35px]">
-              {userSpokenAnswer || interimTranscript ? (
+              {conversationState === 'evaluating' ? (
+                <span className="text-indigo-400 italic flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-indigo-400 animate-ping" />
+                  Emily is analyzing your response & preparing the next question...
+                </span>
+              ) : userSpokenAnswer || interimTranscript ? (
                 <span>
                   {userSpokenAnswer}{' '}
                   <span className="text-emerald-400 italic">{interimTranscript}</span>
@@ -976,17 +991,28 @@ export const MockInterviewSessionPage: React.FC = () => {
                 </span>
               )}
             </p>
+
+            {/* Instant "Done Speaking" Action Button */}
+            {(userSpokenAnswer.trim() || interimTranscript.trim()) && conversationState !== 'evaluating' && (
+              <button
+                onClick={() => handleAutoProcessCandidateAnswer()}
+                className="w-full mt-1 px-3 py-1.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold text-xs shadow-md shadow-emerald-900/30 flex items-center justify-center gap-1.5 transition-all transform active:scale-95"
+              >
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                <span>Done Speaking · Submit Answer ↵</span>
+              </button>
+            )}
           </div>
         </section>
       </div>
 
       {/* =========================================================================
-          BOTTOM CALL DOCK (Matching Photo 4: Floating Mic, Chat, End session)
+          BOTTOM CALL DOCK (Matching Photo 4: Floating Mic, Done Speaking, Chat, End session)
           ========================================================================= */}
       <footer className="absolute bottom-3 left-0 right-0 px-4 flex items-center justify-between pointer-events-none z-30">
         <div className="hidden sm:block w-32" />
 
-        {/* Center Floating Pill: [Mic] [Chat] [End session] */}
+        {/* Center Floating Pill: [Mic] [Done Speaking] [Chat] [End session] */}
         <div className="pointer-events-auto mx-auto flex items-center gap-2 p-1.5 rounded-2xl bg-[#161724]/90 border border-slate-700/80 shadow-2xl backdrop-blur-lg">
           {/* Mic Button */}
           <button
@@ -1003,6 +1029,18 @@ export const MockInterviewSessionPage: React.FC = () => {
           >
             {isListeningMic ? <Mic className="w-4 h-4" /> : <MicOff className="w-4 h-4 text-rose-400" />}
           </button>
+
+          {/* Quick "Done Speaking" button right in dock if user has spoken */}
+          {(userSpokenAnswer.trim() || interimTranscript.trim()) && conversationState !== 'evaluating' && (
+            <button
+              onClick={() => handleAutoProcessCandidateAnswer()}
+              className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition-all flex items-center gap-1 shadow-md shadow-emerald-600/30 animate-pulse"
+              title="Done speaking, submit now"
+            >
+              <CheckCircle2 className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Done Speaking</span>
+            </button>
+          )}
 
           {/* Typing Chat Button */}
           <button

@@ -37,7 +37,8 @@ export const MockInterviewResultPage: React.FC = () => {
 
   const [session, setSession] = useState<MockInterviewDetailedSession | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
-  const [expandedQuestion, setExpandedQuestion] = useState<number | null>(0);
+  // Set of all open question indices (default: all expanded so candidate sees complete answers & diagnostics)
+  const [expandedQuestions, setExpandedQuestions] = useState<Set<number>>(new Set());
 
   useEffect(() => {
     if (!id) return;
@@ -49,6 +50,10 @@ export const MockInterviewResultPage: React.FC = () => {
           data = await completeMockInterview(id);
         }
         setSession(data);
+        if (data.questions && data.questions.length > 0) {
+          // Open all questions by default so user immediately gets the full breakdown
+          setExpandedQuestions(new Set(data.questions.map((_, i) => i)));
+        }
       } catch (err) {
         console.error('Failed to load interview report:', err);
       } finally {
@@ -58,6 +63,27 @@ export const MockInterviewResultPage: React.FC = () => {
 
     loadReport();
   }, [id]);
+
+  const toggleQuestion = (idx: number) => {
+    setExpandedQuestions((prev) => {
+      const next = new Set(prev);
+      if (next.has(idx)) {
+        next.delete(idx);
+      } else {
+        next.add(idx);
+      }
+      return next;
+    });
+  };
+
+  const toggleAllQuestions = () => {
+    if (!session?.questions) return;
+    if (expandedQuestions.size === session.questions.length) {
+      setExpandedQuestions(new Set());
+    } else {
+      setExpandedQuestions(new Set(session.questions.map((_, i) => i)));
+    }
+  };
 
   if (isLoading || !session) {
     return (
@@ -279,19 +305,35 @@ export const MockInterviewResultPage: React.FC = () => {
             QUESTION-BY-QUESTION DEEP DIVE ACCORDION
             ========================================================================= */}
         <div className="space-y-4">
-          <div className="flex items-center justify-between">
-            <h2 className="text-lg font-bold text-slate-900 dark:text-white flex items-center gap-2">
-              <BrainCircuit className="w-5 h-5 text-indigo-500" />
-              <span>Question-by-Question Diagnostic & Model Answers</span>
-            </h2>
-            <span className="text-xs text-slate-500">
-              {session.questions?.length || 0} Questions Evaluated
-            </span>
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div>
+              <h2 className="text-lg font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                <BrainCircuit className="w-5 h-5 text-indigo-500" />
+                <span>Question-by-Question Diagnostic & Model Answers</span>
+              </h2>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                Full answers, verbal transcriptions, and staff engineer benchmarks for every question
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2 shrink-0">
+              <span className="text-xs text-slate-500">
+                {session.questions?.length || 0} Questions Evaluated
+              </span>
+              <button
+                onClick={toggleAllQuestions}
+                className="no-print px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-200 transition-colors"
+              >
+                {session.questions && expandedQuestions.size === session.questions.length
+                  ? 'Collapse All'
+                  : 'Expand All'}
+              </button>
+            </div>
           </div>
 
           <div className="space-y-3">
             {session.questions?.map((q, idx) => {
-              const isOpen = expandedQuestion === idx;
+              const isOpen = expandedQuestions.has(idx);
               const feedback = q.feedback || {
                 overallScore: 84,
                 whatWentWell: [
@@ -304,13 +346,15 @@ export const MockInterviewResultPage: React.FC = () => {
                   'A production-grade answer begins by defining functional and non-functional requirements: high availability, idempotency, and sub-50ms latency. Use Redis Redlock with distributed TTL for inventory reservation, combined with database row-level locking (SELECT FOR UPDATE) within an ACID transaction. If the order succeeds, commit; on failure or timeout, release the lock and rollback cleanly.',
               };
 
+              const score = feedback.overallScore !== undefined ? feedback.overallScore : 85;
+
               return (
                 <div
                   key={q.id || idx}
                   className="rounded-3xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0e0e15] overflow-hidden shadow-sm transition-all"
                 >
                   <button
-                    onClick={() => setExpandedQuestion(isOpen ? null : idx)}
+                    onClick={() => toggleQuestion(idx)}
                     className="w-full p-5 text-left flex items-start justify-between gap-4 hover:bg-slate-50 dark:hover:bg-[#141420] transition-colors"
                   >
                     <div className="space-y-1">
@@ -326,8 +370,16 @@ export const MockInterviewResultPage: React.FC = () => {
                     </div>
 
                     <div className="flex items-center gap-3 shrink-0">
-                      <span className="text-xs font-bold text-emerald-600 dark:text-emerald-400">
-                        {feedback.overallScore || 85}%
+                      <span
+                        className={`text-xs font-bold px-2 py-0.5 rounded-lg border ${
+                          score >= 70
+                            ? 'text-emerald-700 dark:text-emerald-300 bg-emerald-100/60 dark:bg-emerald-950/40 border-emerald-300 dark:border-emerald-700/60'
+                            : score >= 30
+                            ? 'text-amber-700 dark:text-amber-300 bg-amber-100/60 dark:bg-amber-950/40 border-amber-300 dark:border-amber-700/60'
+                            : 'text-rose-700 dark:text-rose-300 bg-rose-100/60 dark:bg-rose-950/40 border-rose-300 dark:border-rose-700/60'
+                        }`}
+                      >
+                        {score}%
                       </span>
                       <ChevronDown
                         className={`w-4 h-4 text-slate-400 transition-transform duration-200 ${
@@ -337,75 +389,77 @@ export const MockInterviewResultPage: React.FC = () => {
                     </div>
                   </button>
 
-                  {isOpen && (
-                    <div className="p-5 pt-0 border-t border-slate-100 dark:border-slate-800/80 space-y-4 text-xs">
-                      {/* Candidate Spoken/Submitted Answer */}
-                      {q.studentAnswer && (
-                        <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#141420] border border-slate-200 dark:border-slate-800 space-y-1.5">
-                          <span className="text-[10px] uppercase font-bold text-indigo-600 dark:text-indigo-400">
-                            Your Transcribed Spoken Answer:
-                          </span>
-                          <p className="text-slate-700 dark:text-slate-300 leading-relaxed font-sans">
-                            "{q.studentAnswer}"
-                          </p>
-                        </div>
+                  <div className={`diagnostic-accordion-content p-5 pt-0 border-t border-slate-100 dark:border-slate-800/80 space-y-4 text-xs ${isOpen ? 'block' : 'hidden'}`}>
+                    {/* Candidate Spoken/Submitted Answer */}
+                    <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#141420] border border-slate-200 dark:border-slate-800 space-y-1.5">
+                      <span className="text-[10px] uppercase font-bold text-indigo-600 dark:text-indigo-400">
+                        Your Transcribed Spoken Answer:
+                      </span>
+                      {q.studentAnswer ? (
+                        <p className="text-slate-700 dark:text-slate-300 leading-relaxed font-sans font-medium">
+                          "{q.studentAnswer}"
+                        </p>
+                      ) : (
+                        <p className="text-slate-400 italic font-sans">
+                          (No spoken answer was recorded for this question / question was skipped)
+                        </p>
                       )}
+                    </div>
 
-                      {/* Candidate Submitted Code Solution if applicable */}
-                      {q.studentCode && (
-                        <div className="p-4 rounded-2xl bg-[#0c0c14] border border-slate-800 space-y-1.5 font-mono text-[11px]">
-                          <span className="text-[10px] uppercase font-bold text-emerald-400 block">
-                            Submitted Code Solution ({q.codeLanguage || 'javascript'}):
-                          </span>
-                          <pre className="text-slate-200 overflow-x-auto p-3 bg-black/50 rounded-xl whitespace-pre-wrap">
-                            {q.studentCode}
-                          </pre>
-                        </div>
-                      )}
+                    {/* Candidate Submitted Code Solution if applicable */}
+                    {q.studentCode && (
+                      <div className="p-4 rounded-2xl bg-[#0c0c14] border border-slate-800 space-y-1.5 font-mono text-[11px]">
+                        <span className="text-[10px] uppercase font-bold text-emerald-400 block">
+                          Submitted Code Solution ({q.codeLanguage || 'javascript'}):
+                        </span>
+                        <pre className="text-slate-200 overflow-x-auto p-3 bg-black/50 rounded-xl whitespace-pre-wrap">
+                          {q.studentCode}
+                        </pre>
+                      </div>
+                    )}
 
-                      {/* Strengths & Missed Points Grid */}
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                        <div className="p-4 rounded-2xl bg-emerald-50/60 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-500/20 space-y-1.5">
-                          <span className="text-[10px] uppercase font-bold text-emerald-700 dark:text-emerald-400">
-                            ✓ What You Articulated Well:
-                          </span>
-                          <ul className="space-y-1 text-slate-700 dark:text-slate-300">
-                            {feedback.whatWentWell?.map((item: string, i: number) => (
-                              <li key={i} className="flex items-start gap-1.5">
-                                <span className="text-emerald-500">•</span>
-                                <span>{item}</span>
-                              </li>
-                            ))}
-                          </ul>
-                        </div>
-
-                        <div className="p-4 rounded-2xl bg-amber-50/60 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-500/20 space-y-1.5">
-                          <span className="text-[10px] uppercase font-bold text-amber-700 dark:text-amber-400">
-                            ⚠️ What Could Be Strengthened:
-                          </span>
-                          <ul className="space-y-1 text-slate-700 dark:text-slate-300">
-                            {feedback.whatWasMissed?.map((item: string, i: number) => (
-                              <li key={i} className="flex items-start gap-1.5">
-                                <span className="text-amber-500">•</span>
-                                <span>{item}</span>
-                              </li>
-                            ))}
-                          </ul>
-                        </div>
+                    {/* Strengths & Missed Points Grid */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div className="p-4 rounded-2xl bg-emerald-50/60 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-500/20 space-y-1.5">
+                        <span className="text-[10px] uppercase font-bold text-emerald-700 dark:text-emerald-400">
+                          ✓ What You Articulated Well:
+                        </span>
+                        <ul className="space-y-1 text-slate-700 dark:text-slate-300">
+                          {feedback.whatWentWell?.map((item: string, i: number) => (
+                            <li key={i} className="flex items-start gap-1.5">
+                              <span className="text-emerald-500">•</span>
+                              <span>{item}</span>
+                            </li>
+                          ))}
+                        </ul>
                       </div>
 
-                      {/* Model Senior Engineer Answer */}
-                      <div className="p-4 rounded-2xl bg-indigo-50/50 dark:bg-indigo-950/20 border border-indigo-200 dark:border-indigo-500/30 space-y-1.5">
-                        <span className="text-[10px] uppercase font-bold text-indigo-600 dark:text-indigo-400 flex items-center gap-1">
-                          <Sparkles className="w-3.5 h-3.5" />
-                          <span>Senior Staff Engineer Benchmark Answer:</span>
+                      <div className="p-4 rounded-2xl bg-amber-50/60 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-500/20 space-y-1.5">
+                        <span className="text-[10px] uppercase font-bold text-amber-700 dark:text-amber-400">
+                          ⚠️ What Could Be Strengthened:
                         </span>
-                        <p className="text-slate-800 dark:text-slate-200 leading-relaxed font-sans">
-                          {feedback.modelAnswer}
-                        </p>
+                        <ul className="space-y-1 text-slate-700 dark:text-slate-300">
+                          {feedback.whatWasMissed?.map((item: string, i: number) => (
+                            <li key={i} className="flex items-start gap-1.5">
+                              <span className="text-amber-500">•</span>
+                              <span>{item}</span>
+                            </li>
+                          ))}
+                        </ul>
                       </div>
                     </div>
-                  )}
+
+                    {/* Model Senior Engineer Answer */}
+                    <div className="p-4 rounded-2xl bg-indigo-50/50 dark:bg-indigo-950/20 border border-indigo-200 dark:border-indigo-500/30 space-y-1.5">
+                      <span className="text-[10px] uppercase font-bold text-indigo-600 dark:text-indigo-400 flex items-center gap-1">
+                        <Sparkles className="w-3.5 h-3.5" />
+                        <span>Senior Staff Engineer Benchmark Answer:</span>
+                      </span>
+                      <p className="text-slate-800 dark:text-slate-200 leading-relaxed font-sans">
+                        {feedback.modelAnswer}
+                      </p>
+                    </div>
+                  </div>
                 </div>
               );
             })}

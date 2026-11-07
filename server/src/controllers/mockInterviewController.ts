@@ -281,15 +281,40 @@ export const submitAnswer = async (
       }
     }
 
-    // Evaluate answer with AI across 6 dimensions
+    // Concurrently evaluate candidate answer AND generate live next question in parallel
+    const hasNextQuestion = qIndex + 1 < interview.questions.length;
     const combinedResponse = cleanAnswer + (code ? `\n\nSubmitted Code Implementation (${codeLanguage || 'code'}):\n${code}` : '');
-    const evaluation = await AIService.evaluateMockAnswer({
-      role: interview.role,
-      question: targetQuestion.question,
-      answer: combinedResponse,
-      category: targetQuestion.category,
-      difficulty: targetQuestion.difficulty,
-    });
+
+    const [evalResult, nextTurnResult] = await Promise.allSettled([
+      AIService.evaluateMockAnswer({
+        role: interview.role,
+        question: targetQuestion.question,
+        answer: combinedResponse,
+        category: targetQuestion.category,
+        difficulty: targetQuestion.difficulty,
+      }),
+      hasNextQuestion
+        ? AIService.generateLiveNextQuestion({
+            role: interview.role,
+            company: interview.company,
+            roundType: interview.interviewType,
+            resumeText: interview.resumeText,
+            questionNumber: qIndex + 2,
+            totalQuestions: interview.questions.length,
+            currentQuestion: targetQuestion.question,
+            candidateAnswer: combinedResponse,
+          })
+        : Promise.resolve(null),
+    ]);
+
+    const evaluation =
+      evalResult.status === 'fulfilled'
+        ? evalResult.value
+        : (AIService as any).fallbackAnswerEvaluation(
+            targetQuestion.question,
+            combinedResponse,
+            targetQuestion.category
+          );
 
     targetQuestion.studentAnswer = cleanAnswer;
     targetQuestion.studentCode = code;
@@ -298,25 +323,12 @@ export const submitAnswer = async (
     targetQuestion.answeredAt = new Date();
     targetQuestion.feedback = evaluation;
 
-    // Check if more questions remain
-    const hasNextQuestion = qIndex + 1 < interview.questions.length;
     let nextQuestionData: any = null;
     let interviewerSpeech = '';
 
     if (hasNextQuestion) {
-      try {
-        // Dynamically generate the next question live based on what candidate just said!
-        const nextTurn = await AIService.generateLiveNextQuestion({
-          role: interview.role,
-          company: interview.company,
-          roundType: interview.interviewType,
-          resumeText: interview.resumeText,
-          questionNumber: qIndex + 2,
-          totalQuestions: interview.questions.length,
-          currentQuestion: targetQuestion.question,
-          candidateAnswer: combinedResponse,
-        });
-
+      if (nextTurnResult.status === 'fulfilled' && nextTurnResult.value) {
+        const nextTurn = nextTurnResult.value;
         const nextQ = interview.questions[qIndex + 1];
         nextQ.question = nextTurn.nextQuestion;
         nextQ.category = nextTurn.category;
@@ -335,8 +347,8 @@ export const submitAnswer = async (
 
         nextQuestionData = nextQ;
         interviewerSpeech = `${nextTurn.interviewerLeadIn} ${nextTurn.nextQuestion}`;
-      } catch (err) {
-        console.warn('Fallback next question:', err);
+      } else {
+        console.warn('Fallback next question applied due to network or empty response');
         const nextQ = interview.questions[qIndex + 1];
         nextQuestionData = nextQ;
         interviewerSpeech = `Hmm, okay. ${nextQ.question}`;
