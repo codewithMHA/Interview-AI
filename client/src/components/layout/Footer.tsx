@@ -103,7 +103,7 @@ export const Footer: React.FC = () => {
               <span className="text-rose-500 animate-pulse">❤️</span>
               <span>by</span>
               <span className="font-bold text-slate-900 dark:text-white px-2 py-0.5 rounded-md bg-slate-100 dark:bg-slate-800/90 border border-slate-200 dark:border-slate-700/80 shadow-2xs">
-                Mohammed
+                Mohammed Hassan Ahmed
               </span>
             </p>
           </div>

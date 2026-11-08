@@ -78,7 +78,7 @@ export const MockInterviewSessionPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { user } = useAuth();
-  const candidateName = user?.name && user.name !== 'Mohammed Farooq' ? user.name : 'Mohammed Hassan Ahmed';
+  const candidateName = user?.name && user.name !== 'Mohammed Farooq' && !user.name.includes('Farooq') ? user.name : 'Mohammed Hassan Ahmed';
   const { theme, toggleTheme } = useTheme();
 
   // Core Session State

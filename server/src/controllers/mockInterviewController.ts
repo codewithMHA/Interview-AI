@@ -139,6 +139,29 @@ export const startInterview = async (
       feedback: undefined,
     }));
 
+    // Ensure Stage 1 is ALWAYS the Introduction & Background question to synchronize with Emily's spoken greeting
+    if (questionsWithStages.length > 0) {
+      const firstQText = (questionsWithStages[0].question || '').toLowerCase();
+      if (!firstQText.includes('yourself') && !firstQText.includes('introduction') && !firstQText.includes('journey')) {
+        questionsWithStages[0] = {
+          id: `q-intro-${Date.now().toString(36)}`,
+          question: `Tell me about yourself, your background in Computer Science, and a brief overview of the key projects you've developed such as your salary or electricity usage tracker.`,
+          category: 'Behavioral',
+          difficulty: 'Beginner',
+          stage: 'introduction',
+          expectedPoints: [
+            'Candidate background, education in Computer Science & engineering journey',
+            'Overview of core projects developed (e.g., Salary tracker, Electricity usage tracker)',
+            'Clear, articulate communication and structured self-introduction',
+          ],
+          sampleFollowUp: 'What motivated you to build the electricity usage tracker, and what was your primary architectural role?',
+          studentAnswer: undefined,
+          answeredAt: undefined,
+          feedback: undefined,
+        };
+      }
+    }
+
     // Coding Problem template if coding interview mode
     let codingProblem: any = undefined;
     if (isCodingInterview) {

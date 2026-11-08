@@ -68,6 +68,17 @@ export const MockInterviewResultPage: React.FC = () => {
     loadReport();
   }, [id]);
 
+  // Ensure all questions are expanded if candidate presses Ctrl+P or uses browser print dialog
+  useEffect(() => {
+    const handleBeforePrint = () => {
+      if (session?.questions && session.questions.length > 0) {
+        setExpandedQuestions(new Set(session.questions.map((_, i) => i)));
+      }
+    };
+    window.addEventListener('beforeprint', handleBeforePrint);
+    return () => window.removeEventListener('beforeprint', handleBeforePrint);
+  }, [session]);
+
   const toggleQuestion = (idx: number) => {
     setExpandedQuestions((prev) => {
       const next = new Set(prev);
@@ -100,7 +111,7 @@ export const MockInterviewResultPage: React.FC = () => {
     );
   }
 
-  const candidateName = user?.name && user.name !== 'Mohammed Farooq' ? user.name : 'Mohammed Hassan Ahmed';
+  const candidateName = user?.name && user.name !== 'Mohammed Farooq' && !user.name.includes('Farooq') ? user.name : 'Mohammed Hassan Ahmed';
 
   // Count actually answered questions (verbal answer or written code)
   const answeredQuestions = session.questions?.filter(

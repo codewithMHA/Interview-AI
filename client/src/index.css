@@ -151,18 +151,26 @@
   .no-print,
   [role="navigation"],
   button,
-  .fixed {
+  .fixed,
+  #placement-ai-chat-widget,
+  [data-ai-chat-widget],
+  .ai-mentor-floating-pill,
+  aside {
     display: none !important;
+    visibility: hidden !important;
   }
 
   /* Ensure all questions and answers in the report are fully expanded and visible */
   .diagnostic-accordion-content,
   .diagnostic-accordion-content.hidden,
-  div.diagnostic-accordion-content {
+  div.diagnostic-accordion-content,
+  [class*="diagnostic-accordion-content"] {
     display: block !important;
     visibility: visible !important;
     opacity: 1 !important;
     height: auto !important;
+    max-height: none !important;
+    overflow: visible !important;
   }
 
   body {
