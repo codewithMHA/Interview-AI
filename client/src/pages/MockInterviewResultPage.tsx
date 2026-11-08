@@ -79,8 +79,12 @@ export const MockInterviewResultPage: React.FC = () => {
         }
         setSession(data);
         if (data.questions && data.questions.length > 0) {
-          // Open all questions by default so user immediately gets the full breakdown
-          setExpandedQuestions(new Set(data.questions.map((_, i) => i)));
+          const answered = data.questions.filter(
+            (q: any) => (q.studentAnswer && q.studentAnswer.trim().length > 0) || (q.studentCode && q.studentCode.trim().length > 0)
+          );
+          const toShow = answered.length > 0 ? answered : data.questions;
+          // Open all attended questions by default so user immediately gets the full breakdown
+          setExpandedQuestions(new Set(toShow.map((_: any, i: number) => i)));
         }
       } catch (err) {
         console.error('Failed to load interview report:', err);
@@ -96,7 +100,11 @@ export const MockInterviewResultPage: React.FC = () => {
   useEffect(() => {
     const handleBeforePrint = () => {
       if (session?.questions && session.questions.length > 0) {
-        setExpandedQuestions(new Set(session.questions.map((_, i) => i)));
+        const answered = session.questions.filter(
+          (q) => (q.studentAnswer && q.studentAnswer.trim().length > 0) || (q.studentCode && q.studentCode.trim().length > 0)
+        );
+        const toShow = answered.length > 0 ? answered : session.questions;
+        setExpandedQuestions(new Set(toShow.map((_, i) => i)));
       }
     };
     window.addEventListener('beforeprint', handleBeforePrint);
@@ -113,15 +121,6 @@ export const MockInterviewResultPage: React.FC = () => {
       }
       return next;
     });
-  };
-
-  const toggleAllQuestions = () => {
-    if (!session?.questions) return;
-    if (expandedQuestions.size === session.questions.length) {
-      setExpandedQuestions(new Set());
-    } else {
-      setExpandedQuestions(new Set(session.questions.map((_, i) => i)));
-    }
   };
 
   if (isLoading || !session) {
@@ -144,12 +143,28 @@ export const MockInterviewResultPage: React.FC = () => {
   const answeredCount = answeredQuestions.length;
   const isSessionIncomplete = answeredCount === 0;
 
-  // Use explicit overallScore or calculate based on answered questions (0 if nothing answered)
-  const overall = session.overallScore !== undefined && session.overallScore !== null
-    ? session.overallScore
-    : isSessionIncomplete
-    ? 0
+  // Option 1: Strictly show evaluated questions (omit unattempted questions so the report is 100% clean and authentic)
+  const questionsToDisplay = answeredQuestions.length > 0 ? answeredQuestions : session.questions || [];
+
+  const toggleAllQuestions = () => {
+    if (!questionsToDisplay || questionsToDisplay.length === 0) return;
+    if (expandedQuestions.size === questionsToDisplay.length) {
+      setExpandedQuestions(new Set());
+    } else {
+      setExpandedQuestions(new Set(questionsToDisplay.map((_, i) => i)));
+    }
+  };
+
+  // Calculate realistic score based directly on questions answered by the candidate
+  const answeredScores = answeredQuestions
+    .map((q) => q.feedback?.overallScore)
+    .filter((s): s is number => typeof s === 'number');
+
+  const calculatedAverage = answeredScores.length > 0
+    ? Math.round(answeredScores.reduce((acc, curr) => acc + curr, 0) / answeredScores.length)
     : 75;
+
+  const overall = isSessionIncomplete ? 0 : calculatedAverage;
 
   const avgScores = {
     technicalDepth: session.report?.categoryScores?.technicalKnowledge ?? (isSessionIncomplete ? 0 : session.averageScores?.technicalDepth ?? 70),
@@ -171,17 +186,17 @@ export const MockInterviewResultPage: React.FC = () => {
           'This interview session was closed prematurely before any answers were recorded. To receive an accurate placement evaluation and hiring recommendation, please restart the interview and speak your technical answers into the microphone.',
       };
     }
-    if (score >= 82 && answered >= 4) {
+    if (score >= 78 && answered >= 2) {
       return {
         verdict: 'STRONG HIRE (Tier-1 Standard)',
         badge: 'Strong Hire',
         color: 'text-emerald-600 dark:text-emerald-400',
         bg: 'bg-emerald-50 dark:bg-emerald-950/30 border-emerald-300 dark:border-emerald-500/40',
         recommendation:
-          'Candidate demonstrated production-level technical articulation, sound ACID transaction understanding, and structured STAR storytelling.',
+          'Candidate demonstrated production-level technical articulation, sound architecture understanding, and structured problem solving.',
       };
     }
-    if (score >= 65 && answered >= 3) {
+    if (score >= 60 && answered >= 1) {
       return {
         verdict: 'LEAN HIRE (High Potential)',
         badge: 'Lean Hire',
@@ -197,7 +212,7 @@ export const MockInterviewResultPage: React.FC = () => {
       color: 'text-amber-600 dark:text-amber-400',
       bg: 'bg-amber-50 dark:bg-amber-950/30 border-amber-300 dark:border-amber-500/40',
       recommendation:
-        `Candidate completed ${answered} of ${session.questions?.length || 5} questions. Practice speaking answers aloud systematically with STAR storytelling and revise Core CS concepts.`,
+        `Candidate completed ${answered} questions. Practice speaking answers aloud systematically with STAR storytelling and revise Core CS concepts.`,
     };
   };
 
@@ -322,7 +337,7 @@ export const MockInterviewResultPage: React.FC = () => {
       currentY += 28;
 
       // 4. Hiring Verdict Banner
-      const isSuccess = overall >= 80 && answeredCount >= 4;
+      const isSuccess = overall >= 78 && answeredCount >= 2;
       const isFail = overall === 0 || answeredCount === 0;
 
       if (isSuccess) {
@@ -396,8 +411,8 @@ export const MockInterviewResultPage: React.FC = () => {
       doc.text('QUESTION-BY-QUESTION TECHNICAL DIAGNOSTIC & BENCHMARKS', margin, currentY);
       currentY += 6;
 
-      if (session.questions && session.questions.length > 0) {
-        session.questions.forEach((q, idx) => {
+      if (questionsToDisplay && questionsToDisplay.length > 0) {
+        questionsToDisplay.forEach((q, idx) => {
           const hasAnswer = (q.studentAnswer && q.studentAnswer.trim().length > 0) || (q.studentCode && q.studentCode.trim().length > 0);
           const qScore = hasAnswer ? (q.feedback?.overallScore ?? 75) : 0;
           const fallbackModel = getBenchmarkForQuestion(q.question, q.category);
@@ -650,8 +665,8 @@ export const MockInterviewResultPage: React.FC = () => {
             {/* Quick Web Print Button (Ensures all questions are expanded before printing) */}
             <button
               onClick={() => {
-                if (session?.questions) {
-                  setExpandedQuestions(new Set(session.questions.map((_, i) => i)));
+                if (questionsToDisplay && questionsToDisplay.length > 0) {
+                  setExpandedQuestions(new Set(questionsToDisplay.map((_, i) => i)));
                 }
                 setTimeout(() => window.print(), 100);
               }}
@@ -822,13 +837,13 @@ export const MockInterviewResultPage: React.FC = () => {
 
             <div className="flex items-center gap-2 shrink-0">
               <span className="text-xs text-slate-500">
-                {session.questions?.length || 0} Questions Evaluated
+                {questionsToDisplay.length} {questionsToDisplay.length === 1 ? 'Question' : 'Questions'} Evaluated
               </span>
               <button
                 onClick={toggleAllQuestions}
                 className="no-print px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-200 transition-colors"
               >
-                {session.questions && expandedQuestions.size === session.questions.length
+                {questionsToDisplay.length > 0 && expandedQuestions.size === questionsToDisplay.length
                   ? 'Collapse All'
                   : 'Expand All'}
               </button>
@@ -836,7 +851,7 @@ export const MockInterviewResultPage: React.FC = () => {
           </div>
 
           <div className="space-y-3">
-            {session.questions?.map((q, idx) => {
+            {questionsToDisplay.map((q, idx) => {
               const isOpen = expandedQuestions.has(idx);
               const hasAnswer = (q.studentAnswer && q.studentAnswer.trim().length > 0) || (q.studentCode && q.studentCode.trim().length > 0);
               const score = hasAnswer ? (q.feedback?.overallScore !== undefined ? q.feedback.overallScore : 75) : 0;
