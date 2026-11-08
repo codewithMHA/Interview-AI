@@ -499,6 +499,34 @@ export const completeInterview = async (
     interview.currentStage = 'completed';
     interview.completedAt = new Date();
 
+    // Populate authentic model benchmark answers for any unanswered / skipped questions so candidate has complete study material
+    if (Array.isArray(interview.questions)) {
+      for (const q of interview.questions) {
+        if (!q.feedback) {
+          const benchmarkEval = (AIService as any).fallbackAnswerEvaluation(q.question, '', q.category);
+          q.feedback = {
+            overallScore: 0,
+            scores: {
+              correctness: 0,
+              technicalDepth: 0,
+              clarity: 0,
+              confidence: 0,
+              completeness: 0,
+              communication: 0,
+            },
+            whatWentWell: ['Question not attempted in this interview session.'],
+            whatWasMissed: [
+              'Candidate exited or completed session before answering this question.',
+              ...(benchmarkEval.whatWasMissed || []).slice(0, 2),
+            ],
+            howToImprove: benchmarkEval.howToImprove,
+            modelAnswer: benchmarkEval.modelAnswer,
+            recommendedTopics: benchmarkEval.recommendedTopics,
+          };
+        }
+      }
+    }
+
     // Generate comprehensive performance report
     const report = generateComprehensiveReport(interview);
     interview.report = report;
@@ -798,15 +826,18 @@ function generateComprehensiveReport(interview: any): any {
       });
     } else {
       // Unanswered question counted as 0
-      weakAnswers.push(`Question: "${q.question}" - Skipped or unanswered.`);
+      weakAnswers.push(`Question: "${q.question}" - Skipped or unattempted in session.`);
+      const benchmarkEval = q.feedback?.modelAnswer
+        ? q.feedback
+        : (AIService as any).fallbackAnswerEvaluation(q.question, '', q.category);
       answerImprovements.push({
         questionId: q.id,
         question: q.question,
-        studentAnswer: 'Unanswered / Skipped',
+        studentAnswer: 'Unanswered / Skipped (Not attempted in session)',
         studentCode: q.studentCode,
-        whatWasGood: 'N/A',
-        whatWasMissing: 'Candidate skipped this question.',
-        suggestedAnswer: fb?.modelAnswer || 'A production-grade answer articulates requirements, trade-offs, and failure recovery.',
+        whatWasGood: 'N/A (Question not attempted)',
+        whatWasMissing: 'Candidate exited or skipped this question before answering.',
+        suggestedAnswer: benchmarkEval.modelAnswer,
       });
     }
   }

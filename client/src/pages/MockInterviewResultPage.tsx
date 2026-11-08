@@ -32,6 +32,30 @@ import { Card, CardContent } from '@/components/common/Card';
 import { Badge } from '@/components/common/Badge';
 import { useAuth } from '@/context/AuthContext';
 
+// Comprehensive High-Precision Senior Staff Engineer Benchmark Answer Generator for All Domain Questions
+export const getBenchmarkForQuestion = (question: string, category?: string): string => {
+  const lower = (question || '').toLowerCase();
+  if (lower.includes('yourself') || lower.includes('journey') || lower.includes('background') || lower.includes('introduction')) {
+    return 'I am a Computer Science and Engineering graduate who began my software engineering journey through a diploma in engineering and progressed into advanced full-stack development. Over the course of my degree, I built production-oriented projects including a Salary and Electricity Usage Tracker, where I implemented reactive dashboards, consumption forecasting, and clean RESTful APIs. My core technical strengths lie in Node.js, JavaScript/TypeScript, React, and database management, and I am passionate about engineering reliable, scalable software architectures.';
+  }
+  if (lower.includes('event loop') || lower.includes('libuv') || lower.includes('runtime') || lower.includes('asynchronous non-blocking')) {
+    return 'Node.js delegates non-blocking asynchronous I/O to the libuv thread pool and operating system kernel (epoll/kqueue). The single-threaded call stack offloads file system and network calls to libuv worker threads. When the event loop or thread pool is saturated by CPU-heavy tasks, subsequent callbacks queue up, triggering event loop lag. In production, this is solved by offloading CPU-intensive workloads to Node.js Worker Threads or dedicated worker clusters, using Redis queues for asynchronous decoupling.';
+  }
+  if (lower.includes('electricity') || lower.includes('meter') || lower.includes('appliance') || lower.includes('predict')) {
+    return 'In the electricity usage tracker, real-time meter telemetry and appliance parameters are ingested through an event-driven Node.js gateway. Upon user onboarding, appliance wattage and historical consumption profiles are captured. To prevent race conditions during simultaneous updates, updates use atomic database operators ($set and $inc in MongoDB) with optimistic concurrency versioning. Consumption forecasting and bill predictions are processed asynchronously using background workers and Gemini AI insights, caching calculated bill estimates in Redis to keep user read latency under 40ms.';
+  }
+  if (lower.includes('lock') || lower.includes('concurrency') || lower.includes('deadlock') || lower.includes('optimistic') || lower.includes('pessimistic')) {
+    return 'Managing high-concurrency database transactions requires choosing the right locking strategy based on contention probability. Optimistic Concurrency Control (OCC) assumes conflicts are rare: each record maintains a version number or timestamp; on update, the application validates WHERE id = :id AND version = :current_version. If another process modified the row, the update fails cleanly, triggering an application-level retry without blocking the database. In contrast, Pessimistic Locking assumes high contention: the transaction acquires an exclusive row-level lock upfront (SELECT ... FOR UPDATE), blocking other readers/writers until commit or rollback. To prevent deadlocks in pessimistic schemes, resources must always be acquired in a globally deterministic order with strict lock timeouts.';
+  }
+  if (lower.includes('microservice') || lower.includes('distributed') || lower.includes('downtime') || lower.includes('outage') || lower.includes('circuit') || lower.includes('queue')) {
+    return 'In a production microservices architecture, services communicate asynchronously via event-driven message brokers (Kafka or RabbitMQ) to decouple request lifecycles and buffer spike traffic. For database operations spanning multiple documents, MongoDB multi-document transactions ensure ACID atomicity across replica sets with majority write concern (w: "majority"). To prevent cascading failures during downstream outages, circuit breakers (Netflix Hystrix / Resilience4j) trip open when error rates breach 50%, falling back to degraded graceful degradation. Zero-downtime deployments are executed via blue-green or rolling Kubernetes deployments with health check probes ensuring no active in-flight requests are dropped.';
+  }
+  if (lower.includes('bug') || lower.includes('conflict') || lower.includes('disagree') || (category || '').toLowerCase().includes('behav')) {
+    return 'Situation: In my Salary Calculator web application developed with JavaScript, a calculation bug occurred where monthly overtime rates caused inaccurate total salary computations for users during specific calendar months. Task: I needed to rapidly isolate the algorithmic discrepancy without disrupting current user computations. Action: I reproduced the failure using isolated unit tests and discovered a floating-point rounding issue coupled with zero-indexed month handling in JavaScript Date. I refactored the calculation logic using integer cents representation and added strict validation guards. Result: The bug was completely eradicated, verified with 100% test coverage across all 12 calendar month test fixtures, ensuring consistent calculations.';
+  }
+  return 'A production-grade answer begins by defining functional and non-functional requirements: high availability, idempotency, and sub-50ms latency. Articulate trade-offs between optimistic and pessimistic concurrency control, explain failure recovery patterns (circuit breakers and dead-letter queues), and conclude with real-world production metrics.';
+};
+
 export const MockInterviewResultPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -376,16 +400,17 @@ export const MockInterviewResultPage: React.FC = () => {
         session.questions.forEach((q, idx) => {
           const hasAnswer = (q.studentAnswer && q.studentAnswer.trim().length > 0) || (q.studentCode && q.studentCode.trim().length > 0);
           const qScore = hasAnswer ? (q.feedback?.overallScore ?? 75) : 0;
-          const feedback = q.feedback || {
+          const fallbackModel = getBenchmarkForQuestion(q.question, q.category);
+          const feedback = q.feedback && q.feedback.modelAnswer ? q.feedback : {
             overallScore: qScore,
             whatWentWell: hasAnswer
               ? ['Articulated system perspective and problem domain clearly', 'Approached the question with structured communication']
-              : ['N/A'],
+              : ['Question was not attempted during this interview session.'],
             whatWasMissed: hasAnswer
               ? ['Could incorporate specific concurrency locking mechanics, ACID guarantees, or runtime bounds under peak load']
-              : ['Candidate skipped or exited session before speaking an answer for this question.'],
+              : ['Candidate exited or completed session before answering this question. Reference model benchmark answer provided below.'],
             howToImprove: ['Review question requirements and articulate trade-offs, locks, and failure recovery.'],
-            modelAnswer: 'A production-grade answer begins by defining functional and non-functional requirements: high availability, idempotency, and sub-50ms latency. Use Redis Redlock with distributed TTL for inventory reservation, combined with database row-level locking (SELECT FOR UPDATE) within an ACID transaction.',
+            modelAnswer: fallbackModel,
           };
 
           // A. Question Header & Score Badge
@@ -396,10 +421,19 @@ export const MockInterviewResultPage: React.FC = () => {
           doc.text(`QUESTION #${idx + 1} · ${(q.category || 'TECHNICAL ARCHITECTURE').toUpperCase()}`, margin + 3, currentY + 4);
 
           doc.setFontSize(8.5);
-          if (qScore >= 70) doc.setTextColor(5, 150, 105);
-          else if (qScore >= 35) doc.setTextColor(217, 119, 6);
-          else doc.setTextColor(220, 38, 38);
-          doc.text(`Score: ${qScore}%`, margin + contentWidth - 25, currentY + 4);
+          if (!hasAnswer) {
+            doc.setTextColor(100, 116, 139);
+            doc.text(`Not Attempted`, margin + contentWidth - 27, currentY + 4);
+          } else if (qScore >= 70) {
+            doc.setTextColor(5, 150, 105);
+            doc.text(`Score: ${qScore}%`, margin + contentWidth - 25, currentY + 4);
+          } else if (qScore >= 35) {
+            doc.setTextColor(217, 119, 6);
+            doc.text(`Score: ${qScore}%`, margin + contentWidth - 25, currentY + 4);
+          } else {
+            doc.setTextColor(220, 38, 38);
+            doc.text(`Score: ${qScore}%`, margin + contentWidth - 25, currentY + 4);
+          }
           currentY += 7;
 
           // B. Question Prompt
@@ -411,7 +445,9 @@ export const MockInterviewResultPage: React.FC = () => {
           currentY += qLines.length * 3.8 + 3;
 
           // C. Candidate Spoken / Submitted Answer Box
-          const answerText = q.studentAnswer ? `"${q.studentAnswer}"` : '(No verbal answer recorded / Question was skipped)';
+          const answerText = hasAnswer
+            ? `"${q.studentAnswer}"`
+            : '(Not Attempted in Session · Full Benchmark Answer and Key Topics Provided Below for Reference)';
           const aLines = doc.splitTextToSize(answerText, contentWidth - 14);
           const aBoxH = aLines.length * 3.5 + 8;
           checkAddPage(Math.min(aBoxH + 4, 80));
@@ -804,17 +840,17 @@ export const MockInterviewResultPage: React.FC = () => {
               const isOpen = expandedQuestions.has(idx);
               const hasAnswer = (q.studentAnswer && q.studentAnswer.trim().length > 0) || (q.studentCode && q.studentCode.trim().length > 0);
               const score = hasAnswer ? (q.feedback?.overallScore !== undefined ? q.feedback.overallScore : 75) : 0;
-              const feedback = q.feedback || {
+              const fallbackModel = getBenchmarkForQuestion(q.question, q.category);
+              const feedback = q.feedback && q.feedback.modelAnswer ? q.feedback : {
                 overallScore: score,
                 whatWentWell: hasAnswer
                   ? ['Clearly structured thoughts with system design rationale', 'Correctly identified core engineering trade-offs']
-                  : ['N/A'],
+                  : ['Question was not attempted during this interview session.'],
                 whatWasMissed: hasAnswer
                   ? ['Could mention specific runtime bounds under peak load']
-                  : ['Candidate skipped or exited session before speaking an answer for this question.'],
-                howToImprove: ['Review question and articulate requirements, trade-offs, and failure recovery.'],
-                modelAnswer:
-                  'A production-grade answer begins by defining functional and non-functional requirements: high availability, idempotency, and sub-50ms latency. Use Redis Redlock with distributed TTL for inventory reservation, combined with database row-level locking (SELECT FOR UPDATE) within an ACID transaction.',
+                  : ['Candidate skipped or exited session before speaking an answer for this question. Reference model benchmark answer provided below.'],
+                howToImprove: ['Review the Senior Staff Engineer benchmark answer below to prepare this architecture topic.'],
+                modelAnswer: fallbackModel,
               };
 
               return (
@@ -841,14 +877,16 @@ export const MockInterviewResultPage: React.FC = () => {
                     <div className="flex items-center gap-3 shrink-0">
                       <span
                         className={`text-xs font-bold px-2 py-0.5 rounded-lg border ${
-                          score >= 70
+                          !hasAnswer
+                            ? 'text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-800/80 border-slate-300 dark:border-slate-700'
+                            : score >= 70
                             ? 'text-emerald-700 dark:text-emerald-300 bg-emerald-100/60 dark:bg-emerald-950/40 border-emerald-300 dark:border-emerald-700/60'
                             : score >= 30
                             ? 'text-amber-700 dark:text-amber-300 bg-amber-100/60 dark:bg-amber-950/40 border-amber-300 dark:border-amber-700/60'
                             : 'text-rose-700 dark:text-rose-300 bg-rose-100/60 dark:bg-rose-950/40 border-rose-300 dark:border-rose-700/60'
                         }`}
                       >
-                        {score}%
+                        {hasAnswer ? `${score}%` : 'Not Attempted'}
                       </span>
                       <ChevronDown
                         className={`w-4 h-4 text-slate-400 transition-transform duration-200 ${
@@ -862,15 +900,15 @@ export const MockInterviewResultPage: React.FC = () => {
                     {/* Candidate Spoken/Submitted Answer */}
                     <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#141420] border border-slate-200 dark:border-slate-800 space-y-1.5">
                       <span className="text-[10px] uppercase font-bold text-indigo-600 dark:text-indigo-400">
-                        Your Transcribed Spoken Answer:
+                        {hasAnswer ? 'Your Transcribed Spoken Answer:' : 'Candidate Status:'}
                       </span>
-                      {q.studentAnswer ? (
+                      {hasAnswer ? (
                         <p className="text-slate-700 dark:text-slate-300 leading-relaxed font-sans font-medium">
                           "{q.studentAnswer}"
                         </p>
                       ) : (
                         <p className="text-slate-400 italic font-sans">
-                          (No spoken answer was recorded for this question / question was skipped)
+                          (Question was not attended / Candidate completed session before answering this question. Reference model benchmark answer provided below.)
                         </p>
                       )}
                     </div>

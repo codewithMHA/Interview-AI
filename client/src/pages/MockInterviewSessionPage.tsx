@@ -113,6 +113,7 @@ export const MockInterviewSessionPage: React.FC = () => {
   const [userSpokenAnswer, setUserSpokenAnswer] = useState<string>('');
   const [interimTranscript, setInterimTranscript] = useState<string>('');
   const latestSpokenAnswerRef = useRef<string>('');
+  const latestInterimRef = useRef<string>('');
   const [micVolumeLevel, setMicVolumeLevel] = useState<number>(0);
   const [isTextModeOpen, setIsTextModeOpen] = useState<boolean>(false);
   const [isTranscriptOpen, setIsTranscriptOpen] = useState<boolean>(false);
@@ -333,7 +334,9 @@ export const MockInterviewSessionPage: React.FC = () => {
     clearSilenceTimer();
     if (isSubmittingAnswerRef.current) return;
 
-    const spoken = latestSpokenAnswerRef.current.trim();
+    // Combine finalized spoken answer with any in-flight interim speech so sentences are never cut off in half
+    const combinedSpoken = (latestSpokenAnswerRef.current + ' ' + (latestInterimRef.current || '')).trim();
+    const spoken = combinedSpoken;
     if (!spoken || spoken.length < 2) return;
 
     if (!session || !id) return;
@@ -346,6 +349,7 @@ export const MockInterviewSessionPage: React.FC = () => {
       setUserSpokenAnswer('');
       setInterimTranscript('');
       latestSpokenAnswerRef.current = '';
+      latestInterimRef.current = '';
       lastSpokenTextSnapshotRef.current = '';
       clearSilenceTimer();
 
@@ -368,6 +372,7 @@ export const MockInterviewSessionPage: React.FC = () => {
       setUserSpokenAnswer('');
       setInterimTranscript('');
       latestSpokenAnswerRef.current = '';
+      latestInterimRef.current = '';
       lastSpokenTextSnapshotRef.current = '';
       clearSilenceTimer();
 
@@ -427,6 +432,7 @@ export const MockInterviewSessionPage: React.FC = () => {
       setUserSpokenAnswer('');
       setInterimTranscript('');
       latestSpokenAnswerRef.current = '';
+      latestInterimRef.current = '';
       lastSpokenTextSnapshotRef.current = '';
 
       // 4. Check if more questions remain
@@ -489,7 +495,9 @@ export const MockInterviewSessionPage: React.FC = () => {
     const recognition = new SpeechRecognition();
     recognition.continuous = true;
     recognition.interimResults = true;
-    recognition.lang = 'en-US';
+    // Set speech recognition language with en-IN support for accurate Indian accent recognition
+    const userLocale = navigator.language || 'en-IN';
+    recognition.lang = userLocale.toLowerCase().includes('in') ? 'en-IN' : 'en-US';
 
     recognition.onresult = (event: any) => {
       let interim = '';
@@ -510,6 +518,7 @@ export const MockInterviewSessionPage: React.FC = () => {
           return updated;
         });
       }
+      latestInterimRef.current = interim;
       setInterimTranscript(interim);
 
       const currentFullText = (latestSpokenAnswerRef.current + ' ' + interim).trim();
@@ -521,7 +530,7 @@ export const MockInterviewSessionPage: React.FC = () => {
         clearSilenceTimer();
 
         if (wordCount >= 2) {
-          setPauseCountdown(2);
+          setPauseCountdown(5);
           pauseIntervalRef.current = setInterval(() => {
             setPauseCountdown((prev) => {
               if (prev === null || prev <= 1) {
@@ -534,19 +543,14 @@ export const MockInterviewSessionPage: React.FC = () => {
 
           silenceTimerRef.current = setTimeout(() => {
             handleAutoProcessCandidateAnswer();
-          }, 2000); // 2.0-second crisp natural silence
+          }, 5500); // 5.5s generous natural silence
         }
       }
     };
 
     recognition.onspeechend = () => {
-      const currentFullText = latestSpokenAnswerRef.current.trim();
-      if (currentFullText.split(/\s+/).filter(Boolean).length >= 2 && !silenceTimerRef.current) {
-        setPauseCountdown(1);
-        silenceTimerRef.current = setTimeout(() => {
-          handleAutoProcessCandidateAnswer();
-        }, 1200);
-      }
+      // In professional interviews, speech end indicates natural pause or clause transition;
+      // Do NOT abruptly cut the candidate off after 1.2s! The 5.5s silenceTimerRef comfortably manages natural turn-taking.
     };
 
     recognition.onerror = (e: any) => {
