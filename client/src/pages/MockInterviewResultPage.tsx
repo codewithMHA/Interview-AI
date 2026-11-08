@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
+import { jsPDF } from 'jspdf';
 import {
   Award,
   Sparkles,
@@ -40,6 +41,8 @@ export const MockInterviewResultPage: React.FC = () => {
   const [isLoading, setIsLoading] = useState<boolean>(true);
   // Set of all open question indices (default: all expanded so candidate sees complete answers & diagnostics)
   const [expandedQuestions, setExpandedQuestions] = useState<Set<number>>(new Set());
+  const [isDownloadingPDF, setIsDownloadingPDF] = useState<boolean>(false);
+  const [downloadSuccess, setDownloadSuccess] = useState<boolean>(false);
 
   useEffect(() => {
     if (!id) return;
@@ -167,244 +170,298 @@ export const MockInterviewResultPage: React.FC = () => {
   const discussedTopics = session.resumeTopics?.filter((t) => t.status === 'discussed') || [];
   const totalTopics = session.resumeTopics?.length || 6;
 
-  // Dedicated Professional PDF Assessment Generator (Clean corporate print document without web artifacts)
-  const handleDownloadPDF = () => {
+  // Dedicated Professional Direct PDF File Generator using jsPDF (Instant Browser Download)
+  const handleDownloadPDF = async () => {
     if (!session) return;
-    const interviewDate = new Date(session.completedAt || session.createdAt).toLocaleDateString('en-US', {
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric',
-    });
+    setIsDownloadingPDF(true);
 
-    const printWindow = window.open('', '_blank');
-    if (!printWindow) {
+    try {
+      const interviewDate = new Date(session.completedAt || session.createdAt).toLocaleDateString('en-US', {
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+      });
+
+      const doc = new jsPDF({
+        orientation: 'portrait',
+        unit: 'mm',
+        format: 'a4',
+      });
+
+      let currentY = 16;
+      const pageHeight = 297;
+      const margin = 14;
+      const pageWidth = 210;
+      const contentWidth = pageWidth - margin * 2; // 182mm
+
+      const checkAddPage = (needed: number) => {
+        if (currentY + needed > pageHeight - 16) {
+          doc.addPage();
+          currentY = 16;
+          // Running page header
+          doc.setDrawColor(226, 232, 240);
+          doc.setLineWidth(0.3);
+          doc.line(margin, 11, margin + contentWidth, 11);
+          doc.setFontSize(7.5);
+          doc.setTextColor(148, 163, 184);
+          doc.text(`InterviewAI · ${candidateName} Assessment Report`, margin, 8.5);
+        }
+      };
+
+      // 1. Purple Header Bar
+      doc.setFillColor(79, 70, 229);
+      doc.rect(margin, currentY, contentWidth, 3, 'F');
+      currentY += 8;
+
+      // 2. Main Title
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(16);
+      doc.setTextColor(79, 70, 229);
+      doc.text('InterviewAI · Autonomous Placement OS', margin, currentY);
+
+      doc.setFontSize(8.5);
+      doc.setTextColor(100, 116, 139);
+      doc.text(`Report ID: ${session.id || (session as any)._id || 'ACC-2026'}`, margin + contentWidth - 45, currentY);
+      currentY += 5;
+
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(8.5);
+      doc.setTextColor(100, 116, 139);
+      doc.text('OFFICIAL CANDIDATE PLACEMENT ASSESSMENT & HIRING REPORT', margin, currentY);
+      currentY += 7;
+
+      // 3. Metadata Grid Box
+      doc.setDrawColor(226, 232, 240);
+      doc.setFillColor(248, 250, 252);
+      doc.roundedRect(margin, currentY, contentWidth, 24, 2, 2, 'FD');
+
+      doc.setFontSize(8.5);
+      // Row 1
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(71, 85, 105);
+      doc.text('Candidate Name:', margin + 4, currentY + 6);
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(15, 23, 42);
+      doc.text(candidateName, margin + 35, currentY + 6);
+
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(71, 85, 105);
+      doc.text('Overall Score:', margin + 105, currentY + 6);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(79, 70, 229);
+      doc.text(`${overall} / 100 (${decision.badge})`, margin + 132, currentY + 6);
+
+      // Row 2
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(71, 85, 105);
+      doc.text('Target Role:', margin + 4, currentY + 12);
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(15, 23, 42);
+      doc.text(`${session.role || 'Software Development Engineer'}`, margin + 35, currentY + 12);
+
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(71, 85, 105);
+      doc.text('Target Company:', margin + 105, currentY + 12);
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(15, 23, 42);
+      doc.text(`${session.company || 'Amazon'}`, margin + 132, currentY + 12);
+
+      // Row 3
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(71, 85, 105);
+      doc.text('Lead Evaluator:', margin + 4, currentY + 18);
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(15, 23, 42);
+      doc.text(`${session.interviewerName || 'Emily Zhou'} (Senior Software Engineer)`, margin + 35, currentY + 18);
+
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(71, 85, 105);
+      doc.text('Assessment Date:', margin + 105, currentY + 18);
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(15, 23, 42);
+      doc.text(interviewDate, margin + 132, currentY + 18);
+
+      currentY += 28;
+
+      // 4. Hiring Verdict Banner
+      const isSuccess = overall >= 80 && answeredCount >= 4;
+      const isFail = overall === 0 || answeredCount === 0;
+
+      if (isSuccess) {
+        doc.setFillColor(236, 253, 245);
+        doc.setDrawColor(16, 185, 129);
+      } else if (isFail) {
+        doc.setFillColor(254, 242, 242);
+        doc.setDrawColor(239, 68, 68);
+      } else {
+        doc.setFillColor(255, 251, 235);
+        doc.setDrawColor(245, 158, 11);
+      }
+      doc.setLineWidth(0.4);
+      doc.roundedRect(margin, currentY, contentWidth, 19, 2, 2, 'FD');
+
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(10);
+      if (isSuccess) doc.setTextColor(6, 95, 70);
+      else if (isFail) doc.setTextColor(185, 28, 28);
+      else doc.setTextColor(146, 64, 14);
+      doc.text(`HIRING DECISION: ${decision.verdict}`, margin + 4, currentY + 6);
+
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(8);
+      const recLines = doc.splitTextToSize(decision.recommendation, contentWidth - 8);
+      doc.text(recLines, margin + 4, currentY + 11);
+
+      currentY += 24;
+
+      // 5. Core Competencies Matrix
+      checkAddPage(22);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(9);
+      doc.setTextColor(30, 41, 59);
+      doc.text('CORE PLACEMENT COMPETENCIES MATRIX', margin, currentY);
+      currentY += 4;
+
+      doc.setFillColor(241, 245, 249);
+      doc.setDrawColor(203, 213, 225);
+      doc.rect(margin, currentY, contentWidth, 6, 'FD');
+
+      doc.setFontSize(7.5);
+      doc.setTextColor(51, 65, 85);
+      const colW = contentWidth / 6;
+      doc.text('Technical Depth', margin + 2, currentY + 4.2);
+      doc.text('Correctness', margin + colW + 2, currentY + 4.2);
+      doc.text('Clarity', margin + colW * 2 + 2, currentY + 4.2);
+      doc.text('Confidence', margin + colW * 3 + 2, currentY + 4.2);
+      doc.text('Completeness', margin + colW * 4 + 2, currentY + 4.2);
+      doc.text('Communication', margin + colW * 5 + 2, currentY + 4.2);
+      currentY += 6;
+
+      doc.setFillColor(255, 255, 255);
+      doc.rect(margin, currentY, contentWidth, 7, 'FD');
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(8.5);
+      doc.setTextColor(15, 23, 42);
+      doc.text(`${avgScores.technicalDepth}%`, margin + 2, currentY + 5);
+      doc.text(`${avgScores.correctness}%`, margin + colW + 2, currentY + 5);
+      doc.text(`${avgScores.clarity}%`, margin + colW * 2 + 2, currentY + 5);
+      doc.text(`${avgScores.confidence}%`, margin + colW * 3 + 2, currentY + 5);
+      doc.text(`${avgScores.completeness}%`, margin + colW * 4 + 2, currentY + 5);
+      doc.text(`${avgScores.communication}%`, margin + colW * 5 + 2, currentY + 5);
+      currentY += 12;
+
+      // 6. Question-by-Question Deep Dive
+      checkAddPage(15);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(9);
+      doc.setTextColor(30, 41, 59);
+      doc.text('QUESTION-BY-QUESTION TECHNICAL DIAGNOSTIC & BENCHMARKS', margin, currentY);
+      currentY += 6;
+
+      if (session.questions && session.questions.length > 0) {
+        session.questions.forEach((q, idx) => {
+          const hasAnswer = (q.studentAnswer && q.studentAnswer.trim().length > 0) || (q.studentCode && q.studentCode.trim().length > 0);
+          const qScore = hasAnswer ? (q.feedback?.overallScore ?? 75) : 0;
+          const feedback = q.feedback || {
+            overallScore: qScore,
+            whatWentWell: hasAnswer ? ['Clearly articulated reasoning with engineering trade-offs'] : ['N/A'],
+            whatWasMissed: hasAnswer ? ['Could mention specific runtime bounds under peak load'] : ['Candidate skipped or exited before speaking an answer.'],
+            howToImprove: ['Review requirements and articulate edge case handling using STAR storytelling.'],
+            modelAnswer: 'A production-grade answer begins by defining functional and non-functional requirements: high availability, idempotency, and sub-50ms latency. Use Redis Redlock with distributed TTL for inventory reservation, combined with database row-level locking (SELECT FOR UPDATE) within an ACID transaction.',
+          };
+
+          const qLines = doc.splitTextToSize(`${q.question}`, contentWidth - 8);
+          const answerText = q.studentAnswer ? `"${q.studentAnswer}"` : '(No verbal answer recorded / Question was skipped)';
+          const aLines = doc.splitTextToSize(answerText, contentWidth - 12);
+          const modelLines = doc.splitTextToSize(feedback.modelAnswer || 'A production-grade answer articulates requirements and failure recovery.', contentWidth - 12);
+
+          const estimatedHeight = 16 + (qLines.length * 4) + (aLines.length * 3.5) + (Math.min(modelLines.length, 5) * 3.2) + 12;
+          checkAddPage(Math.min(estimatedHeight, 70));
+
+          // Question Header
+          doc.setFont('helvetica', 'bold');
+          doc.setFontSize(8.5);
+          doc.setTextColor(79, 70, 229);
+          doc.text(`QUESTION #${idx + 1} · ${q.category || 'TECHNICAL ARCHITECTURE'}`, margin + 3, currentY + 4);
+
+          // Score tag
+          doc.setFontSize(8.5);
+          if (qScore >= 70) doc.setTextColor(5, 150, 105);
+          else if (qScore >= 30) doc.setTextColor(217, 119, 6);
+          else doc.setTextColor(220, 38, 38);
+          doc.text(`Score: ${qScore}%`, margin + contentWidth - 25, currentY + 4);
+          currentY += 7;
+
+          // Question Prompt
+          doc.setFont('helvetica', 'bold');
+          doc.setFontSize(8);
+          doc.setTextColor(15, 23, 42);
+          doc.text(qLines, margin + 3, currentY);
+          currentY += qLines.length * 4 + 2;
+
+          // Candidate Spoken Answer Box
+          doc.setFillColor(248, 250, 252);
+          doc.setDrawColor(hasAnswer ? 99 : 239, hasAnswer ? 102 : 68, hasAnswer ? 241 : 68);
+          doc.setLineWidth(0.4);
+          const aBoxH = aLines.length * 3.5 + 6;
+          doc.rect(margin + 3, currentY, contentWidth - 6, aBoxH, 'FD');
+          doc.line(margin + 3, currentY, margin + 3, currentY + aBoxH);
+
+          doc.setFont('helvetica', 'bold');
+          doc.setFontSize(7);
+          doc.setTextColor(hasAnswer ? 79 : 220, hasAnswer ? 70 : 38, hasAnswer ? 229 : 38);
+          doc.text(hasAnswer ? 'CANDIDATE TRANSCRIBED VERBAL RESPONSE:' : 'CANDIDATE RESPONSE: (SKIPPED / UNANSWERED)', margin + 6, currentY + 4);
+
+          doc.setFont('helvetica', hasAnswer ? 'normal' : 'italic');
+          doc.setFontSize(7.5);
+          doc.setTextColor(hasAnswer ? 30 : 100, hasAnswer ? 41 : 116, hasAnswer ? 59 : 139);
+          doc.text(aLines, margin + 6, currentY + 8);
+          currentY += aBoxH + 3;
+
+          // Model Benchmark Answer Box
+          doc.setFillColor(250, 245, 255);
+          doc.setDrawColor(216, 180, 254);
+          const mBoxH = Math.min(modelLines.length * 3.2 + 6, 26);
+          doc.roundedRect(margin + 3, currentY, contentWidth - 6, mBoxH, 1.5, 1.5, 'FD');
+
+          doc.setFont('helvetica', 'bold');
+          doc.setFontSize(7);
+          doc.setTextColor(126, 34, 206);
+          doc.text('STAFF ENGINEER BENCHMARK ANSWER:', margin + 6, currentY + 4);
+
+          doc.setFont('helvetica', 'normal');
+          doc.setFontSize(7.2);
+          doc.setTextColor(88, 28, 135);
+          doc.text(modelLines.slice(0, 5), margin + 6, currentY + 8);
+          currentY += mBoxH + 6;
+        });
+      }
+
+      // 7. Footer Sign-off on the last page
+      checkAddPage(18);
+      doc.setDrawColor(203, 213, 225);
+      doc.setLineWidth(0.3);
+      doc.line(margin, currentY, margin + contentWidth, currentY);
+      currentY += 4;
+
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(7.5);
+      doc.setTextColor(100, 116, 139);
+      doc.text('Certified by InterviewAI Autonomous Evaluation Engine · Multi-Modal Placement OS', margin, currentY);
+      doc.text(`Candidate: ${candidateName} · Official Record`, margin + contentWidth - 75, currentY);
+
+      // Trigger Direct PDF File Download in user's browser
+      const cleanFileName = `${candidateName.replace(/\s+/g, '_')}_InterviewAI_Report.pdf`;
+      doc.save(cleanFileName);
+
+      setDownloadSuccess(true);
+      setTimeout(() => setDownloadSuccess(false), 3000);
+    } catch (err) {
+      console.error('Error generating PDF with jsPDF, falling back to window.print:', err);
       window.print();
-      return;
+    } finally {
+      setIsDownloadingPDF(false);
     }
-
-    const htmlContent = `
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>${candidateName.replace(/\\s+/g, '_')}_InterviewAI_Assessment_Report</title>
-  <style>
-    @page { size: A4 portrait; margin: 15mm; }
-    * { box-sizing: border-box; }
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-      color: #0f172a;
-      background: #ffffff;
-      margin: 0;
-      padding: 24px;
-      line-height: 1.5;
-      font-size: 10.5pt;
-    }
-    .header-table { width: 100%; border-bottom: 2.5px solid #4f46e5; padding-bottom: 14px; margin-bottom: 20px; }
-    .logo-title { font-size: 20pt; font-weight: 800; color: #4f46e5; margin: 0; }
-    .subtitle { font-size: 9pt; color: #64748b; text-transform: uppercase; letter-spacing: 1px; font-weight: 700; margin-top: 3px; }
-    .meta-grid { width: 100%; margin-bottom: 20px; border-collapse: collapse; }
-    .meta-grid td { padding: 7px 12px; border: 1px solid #e2e8f0; font-size: 9pt; }
-    .meta-label { font-weight: 700; color: #475569; background: #f8fafc; width: 25%; }
-    .meta-val { font-weight: 600; color: #0f172a; }
-    .decision-banner {
-      background: #ecfdf5;
-      border: 1.5px solid #10b981;
-      border-radius: 8px;
-      padding: 14px 18px;
-      margin-bottom: 20px;
-    }
-    .decision-title { font-size: 13pt; font-weight: 800; color: #065f46; margin: 0 0 4px 0; }
-    .decision-text { font-size: 9.5pt; color: #047857; margin: 0; }
-    .section-title {
-      font-size: 11pt;
-      font-weight: 800;
-      color: #1e293b;
-      border-bottom: 1.5px solid #cbd5e1;
-      padding-bottom: 5px;
-      margin: 22px 0 12px 0;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-    }
-    .score-table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
-    .score-table th, .score-table td { border: 1px solid #cbd5e1; padding: 8px 12px; text-align: left; font-size: 9pt; }
-    .score-table th { background: #f1f5f9; font-weight: 700; color: #334155; }
-    .question-card {
-      border: 1px solid #cbd5e1;
-      border-radius: 8px;
-      padding: 14px;
-      margin-bottom: 16px;
-      page-break-inside: avoid;
-    }
-    .q-badge {
-      display: inline-block;
-      padding: 2px 8px;
-      border-radius: 4px;
-      background: #e0e7ff;
-      color: #3730a3;
-      font-size: 8pt;
-      font-weight: 700;
-      text-transform: uppercase;
-      margin-bottom: 6px;
-    }
-    .q-text { font-size: 10.5pt; font-weight: 700; color: #0f172a; margin: 0 0 10px 0; }
-    .answer-box { background: #f8fafc; border-left: 3px solid #6366f1; padding: 10px 12px; margin-bottom: 10px; font-size: 9.5pt; }
-    .answer-title { font-size: 8pt; font-weight: 700; text-transform: uppercase; color: #4f46e5; margin-bottom: 4px; }
-    .feedback-grid { display: flex; gap: 12px; margin-bottom: 10px; }
-    .fb-col { flex: 1; padding: 10px; border-radius: 6px; font-size: 8.5pt; }
-    .fb-good { background: #f0fdf4; border: 1px solid #bbf7d0; color: #166534; }
-    .fb-miss { background: #fffbeb; border: 1px solid #fde68a; color: #92400e; }
-    .model-box { background: #faf5ff; border: 1px solid #e9d5ff; border-radius: 6px; padding: 10px 12px; font-size: 9pt; color: #581c87; }
-    .model-title { font-weight: 700; color: #6b21a8; font-size: 8pt; text-transform: uppercase; margin-bottom: 4px; }
-    .footer-signoff {
-      margin-top: 30px;
-      padding-top: 15px;
-      border-top: 1px solid #cbd5e1;
-      font-size: 8pt;
-      color: #64748b;
-      display: flex;
-      justify-content: space-between;
-    }
-  </style>
-</head>
-<body>
-  <table class="header-table">
-    <tr>
-      <td>
-        <h1 class="logo-title">InterviewAI · Placement OS</h1>
-        <div class="subtitle">Official Candidate Placement Assessment & Hiring Report</div>
-      </td>
-      <td style="text-align: right; vertical-align: bottom;">
-        <span style="font-size: 9pt; color: #64748b;">Report ID: <strong>${session.id || session._id || 'ACC-2026'}</strong></span>
-      </td>
-    </tr>
-  </table>
-
-  <table class="meta-grid">
-    <tr>
-      <td class="meta-label">Candidate Name:</td>
-      <td class="meta-val">${candidateName}</td>
-      <td class="meta-label">Overall Readiness:</td>
-      <td class="meta-val" style="color: #4f46e5; font-size: 11pt;">${overall} / 100 (${decision.badge})</td>
-    </tr>
-    <tr>
-      <td class="meta-label">Target Role:</td>
-      <td class="meta-val">${session.role || 'Software Development Engineer'}</td>
-      <td class="meta-label">Target Company:</td>
-      <td class="meta-val">${session.company || 'Amazon'}</td>
-    </tr>
-    <tr>
-      <td class="meta-label">Lead Evaluator:</td>
-      <td class="meta-val">${session.interviewerName || 'Emily Zhou'} (${session.interviewerRole || 'Senior Software Engineer'})</td>
-      <td class="meta-label">Assessment Date:</td>
-      <td class="meta-val">${interviewDate}</td>
-    </tr>
-    <tr>
-      <td class="meta-label">Interview Track:</td>
-      <td class="meta-val">${session.interviewType || 'Technical'} (${session.roundType?.replace(/_/g, ' ') || 'Project Deep Dive'})</td>
-      <td class="meta-label">Total Duration:</td>
-      <td class="meta-val">${session.duration || 30} Minutes</td>
-    </tr>
-  </table>
-
-  <div class="decision-banner">
-    <div class="decision-title">Hiring Decision: ${decision.verdict}</div>
-    <p class="decision-text">${decision.recommendation}</p>
-  </div>
-
-  <div class="section-title">Core Placement Competencies Matrix</div>
-  <table class="score-table">
-    <tr>
-      <th>Technical Depth</th>
-      <th>Correctness</th>
-      <th>Clarity & Articulation</th>
-      <th>Confidence</th>
-      <th>Completeness</th>
-      <th>Communication</th>
-    </tr>
-    <tr>
-      <td style="font-weight: 700;">${avgScores.technicalDepth}%</td>
-      <td style="font-weight: 700;">${avgScores.correctness}%</td>
-      <td style="font-weight: 700;">${avgScores.clarity}%</td>
-      <td style="font-weight: 700;">${avgScores.confidence}%</td>
-      <td style="font-weight: 700;">${avgScores.completeness}%</td>
-      <td style="font-weight: 700;">${avgScores.communication}%</td>
-    </tr>
-  </table>
-
-  <div class="section-title">Question-by-Question Technical Diagnostic & Benchmarks</div>
-  ${session.questions?.map((q, idx) => {
-    const hasAnswer = (q.studentAnswer && q.studentAnswer.trim().length > 0) || (q.studentCode && q.studentCode.trim().length > 0);
-    const qScore = hasAnswer ? (q.feedback?.overallScore ?? 75) : 0;
-    const feedback = q.feedback || {
-      overallScore: qScore,
-      whatWentWell: hasAnswer ? ['Structured thoughts with system design rationale'] : ['N/A'],
-      whatWasMissed: hasAnswer ? ['Could mention runtime bounds under peak load'] : ['Candidate skipped or exited before speaking an answer.'],
-      howToImprove: ['Review question and articulate requirements, trade-offs, and failure recovery.'],
-      modelAnswer: 'A production-grade answer begins by defining functional and non-functional requirements...',
-    };
-    return `
-    <div class="question-card">
-      <span class="q-badge">Question #${idx + 1} · ${q.category || 'Architecture'}</span>
-      <div style="float: right; font-weight: 800; color: ${qScore >= 70 ? '#059669' : qScore >= 30 ? '#d97706' : '#dc2626'}; font-size: 10pt;">
-        Score: ${qScore}%
-      </div>
-      <div class="q-text">${q.question}</div>
-
-      <div class="answer-box">
-        <div class="answer-title">Candidate Transcribed Verbal Response:</div>
-        <div style="color: #1e293b; font-style: ${q.studentAnswer ? 'normal' : 'italic'};">
-          ${q.studentAnswer ? `"${q.studentAnswer}"` : '(No verbal answer recorded / Question was skipped)'}
-        </div>
-      </div>
-
-      <div class="feedback-grid">
-        <div class="fb-col fb-good">
-          <strong>✓ What Was Articulated Well:</strong>
-          <ul style="margin: 4px 0 0 0; padding-left: 18px;">
-            ${feedback.whatWentWell?.map((w: string) => `<li>${w}</li>`).join('') || '<li>Demonstrated sound foundational awareness.</li>'}
-          </ul>
-        </div>
-        <div class="fb-col fb-miss">
-          <strong>⚠️ Areas for Growth / Missing Nuances:</strong>
-          <ul style="margin: 4px 0 0 0; padding-left: 18px;">
-            ${feedback.whatWasMissed?.map((m: string) => `<li>${m}</li>`).join('') || '<li>Could elaborate with concrete production edge-cases.</li>'}
-          </ul>
-        </div>
-      </div>
-
-      <div class="model-box">
-        <div class="model-title">Senior Staff Engineer Benchmark Answer:</div>
-        <div>${feedback.modelAnswer}</div>
-      </div>
-    </div>
-    `;
-  }).join('')}
-
-  ${session.candidateNotes ? `
-  <div class="section-title">Candidate Architectural Notes & Talking Points</div>
-  <pre style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 12px; font-size: 8.5pt; font-family: monospace; white-space: pre-wrap;">${session.candidateNotes}</pre>
-  ` : ''}
-
-  <div class="footer-signoff">
-    <span>Certified by InterviewAI Autonomous Evaluation Engine</span>
-    <span>Candidate: ${candidateName} · Official Placement Assessment Record</span>
-  </div>
-
-  <script>
-    window.onload = function() {
-      setTimeout(function() {
-        window.print();
-      }, 350);
-    };
-  </script>
-</body>
-</html>
-    `;
-
-    printWindow.document.open();
-    printWindow.document.write(htmlContent);
-    printWindow.document.close();
   };
 
   return (
@@ -425,10 +482,26 @@ export const MockInterviewResultPage: React.FC = () => {
             {/* Direct Official PDF Download Button */}
             <button
               onClick={handleDownloadPDF}
-              className="px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-indigo-600 to-brand-600 hover:from-indigo-500 hover:to-brand-500 text-white text-xs font-bold transition-all shadow-md shadow-indigo-500/25 flex items-center gap-1.5 transform active:scale-95"
+              disabled={isDownloadingPDF}
+              className="px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-indigo-600 to-brand-600 hover:from-indigo-500 hover:to-brand-500 text-white text-xs font-bold transition-all shadow-md shadow-indigo-500/25 flex items-center gap-1.5 transform active:scale-95 disabled:opacity-75"
+              title="Download official PDF report to your computer"
             >
-              <Download className="w-3.5 h-3.5" />
-              <span>Download PDF Report</span>
+              {isDownloadingPDF ? (
+                <>
+                  <span className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                  <span>Generating PDF...</span>
+                </>
+              ) : downloadSuccess ? (
+                <>
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-300" />
+                  <span>PDF Downloaded!</span>
+                </>
+              ) : (
+                <>
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Download PDF Report</span>
+                </>
+              )}
             </button>
 
             {/* Quick Web Print Button */}

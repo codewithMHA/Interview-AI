@@ -342,3 +342,4 @@ export const EmilyAIVideoAvatar: React.FC<EmilyAIVideoAvatarProps> = ({
     </div>
   );
 };
+
