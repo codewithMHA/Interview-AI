@@ -2387,7 +2387,7 @@ Return ONLY a valid JSON array matching this schema:
     category?: string;
     difficulty?: string;
   }): Promise<AnswerEvaluationResponse> {
-    const prompt = `You are a strict, elite Technical Placement Interviewer and Engineering Manager evaluating a student's answer in a campus recruitment mock interview.
+    const prompt = `You are a fair, constructive, and elite Technical Placement Interviewer and Engineering Manager evaluating an undergraduate student in a campus recruitment mock interview.
 Role: ${params.role}
 Question: ${params.question}
 Category: ${params.category || 'Technical'}
@@ -2395,15 +2395,30 @@ Difficulty: ${params.difficulty || 'Intermediate'}
 Student's Submitted Answer:
 "${params.answer}"
 
-CRITICAL RIGOROUS SCORING RULES:
-1. If the student's answer is wrong, irrelevant, off-topic, gibberish, or completely fails to answer the question:
-   - You MUST award a score between 0 and 15 (e.g., Overall Score: 5-15, Correctness: 0-10, Technical Depth: 0-10).
-   - NEVER award 50-60+ points to incorrect, off-topic, or empty answers! Be honest and strict like a real interviewer.
-2. If the answer is partially correct or surface-level (missing edge cases or trade-offs):
-   - Award a score between 35 and 65 based on genuine technical substance.
-3. If the answer is accurate, well-structured, and covers core trade-offs:
-   - Award a score between 70 and 95.
-4. "modelAnswer": MUST BE a complete, highly detailed, production-grade campus placement reference answer specifically addressing the exact question: "${params.question}". Do NOT provide a generic template sentence!
+EVALUATION & SCORING PRINCIPLES:
+1. Candidate Persona & Articulation:
+   - The candidate is an undergraduate engineer preparing for Tier-1 placements (Amazon, Microsoft, Google, top startups).
+   - They may articulate answers conversationally or in Indian/ESL phrasing (e.g. "if a new user comes means have to sign up and at their appliance and usage...").
+   - Value their functional problem decomposition, system intent, and engineering intuition.
+
+2. Objective Scoring Rubric:
+   - EMPTY / SKIPPED / 1-3 TRIVIAL WORDS ("yes", "ok", "no", random gibberish):
+     * Award 10-20. State clearly in "whatWasMissed" that no technical elaboration was provided.
+   - FUNCTIONAL / CONVERSATIONAL OVERVIEW (explains application flow, project feature logic, or general intuition but lacks deep concurrency/locks/internals):
+     * Award 45-60. Positively recognize their problem understanding in "whatWentWell", and explain the missing architectural mechanisms (e.g. database locks, ACID, message queues, libuv phases) in "whatWasMissed".
+   - SOLID TECHNICAL ANSWER (explains core mechanics, data structures, or trade-offs with good clarity):
+     * Award 65-80.
+   - EXCEPTIONAL SENIOR-LEVEL ANSWER (covers edge cases, asymptotic bounds, concurrency, and production failure recovery):
+     * Award 82-95.
+
+3. "modelAnswer" Requirement:
+   - MUST BE a complete, highly detailed 4-6 sentence production-grade Staff Engineer reference answer specifically answering: "${params.question}".
+   - Mention concrete technologies (e.g., Redis Redlock, PostgreSQL row locks, Kafka queues, libuv event loop phases, V8 call stack) and production trade-offs.
+
+4. "whatWentWell" & "whatWasMissed":
+   - "whatWentWell": 2-3 genuine, encouraging bullet points recognizing what the candidate articulated.
+   - "whatWasMissed": 2-3 specific technical points, edge cases, or runtime bounds that would elevate them to a Tier-1 hire.
+   - "howToImprove": 2 actionable tips for real campus placement rounds.
 
 Return ONLY a valid JSON object matching this schema:
 {

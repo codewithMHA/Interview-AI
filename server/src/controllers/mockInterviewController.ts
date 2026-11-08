@@ -788,16 +788,23 @@ function generateComprehensiveReport(interview: any): any {
     }
   }
 
-  // Fairly normalize score across all interview questions (unanswered questions reduce score)
-  const overallScore = Math.min(100, Math.max(0, Math.round(totalScore / totalQuestions)));
+  // Normalize performance metrics based on answered questions
+  const divisor = Math.max(1, answeredCount);
+  const averageAnsweredScore = Math.round(totalScore / divisor);
 
-  // Category scores (out of 100) normalized across total questions
+  // Overall score blends performance on answered questions with completion factor
+  // If all questions were completed, overallScore is purely the average.
+  // If session ended early, completion ratio scales it fairly without crushing answered performance.
+  const completionRatio = answeredCount / totalQuestions;
+  const overallScore = Math.min(100, Math.max(0, Math.round(averageAnsweredScore * (0.55 + 0.45 * completionRatio))));
+
+  // Category scores (out of 100) normalized across answered questions
   const categoryScores = {
-    technicalKnowledge: Math.min(100, Math.round(totals.technicalDepth / totalQuestions)),
-    communicationClarity: Math.min(100, Math.round(totals.communication / totalQuestions)),
-    problemSolving: Math.min(100, Math.round(totals.correctness / totalQuestions)),
-    answerRelevance: Math.min(100, Math.round(totals.completeness / totalQuestions)),
-    conceptualUnderstanding: Math.min(100, Math.round(totals.clarity / totalQuestions)),
+    technicalKnowledge: Math.min(100, Math.round(totals.technicalDepth / divisor)),
+    communicationClarity: Math.min(100, Math.round(totals.communication / divisor)),
+    problemSolving: Math.min(100, Math.round(totals.correctness / divisor)),
+    answerRelevance: Math.min(100, Math.round(totals.completeness / divisor)),
+    conceptualUnderstanding: Math.min(100, Math.round(totals.clarity / divisor)),
   };
 
   const prepLevel =

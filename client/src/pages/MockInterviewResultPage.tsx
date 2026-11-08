@@ -193,10 +193,12 @@ export const MockInterviewResultPage: React.FC = () => {
       const margin = 14;
       const pageWidth = 210;
       const contentWidth = pageWidth - margin * 2; // 182mm
+      let pageNumber = 1;
 
       const checkAddPage = (needed: number) => {
         if (currentY + needed > pageHeight - 16) {
           doc.addPage();
+          pageNumber++;
           currentY = 16;
           // Running page header
           doc.setDrawColor(226, 232, 240);
@@ -205,6 +207,7 @@ export const MockInterviewResultPage: React.FC = () => {
           doc.setFontSize(7.5);
           doc.setTextColor(148, 163, 184);
           doc.text(`InterviewAI · ${candidateName} Assessment Report`, margin, 8.5);
+          doc.text(`Page ${pageNumber}`, margin + contentWidth - 12, 8.5);
         }
       };
 
@@ -350,7 +353,7 @@ export const MockInterviewResultPage: React.FC = () => {
       doc.text(`${avgScores.communication}%`, margin + colW * 5 + 2, currentY + 5);
       currentY += 12;
 
-      // 6. Question-by-Question Deep Dive
+      // 6. Question-by-Question Deep Dive (Full answers & benchmarks, no omissions)
       checkAddPage(15);
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(9);
@@ -364,76 +367,169 @@ export const MockInterviewResultPage: React.FC = () => {
           const qScore = hasAnswer ? (q.feedback?.overallScore ?? 75) : 0;
           const feedback = q.feedback || {
             overallScore: qScore,
-            whatWentWell: hasAnswer ? ['Clearly articulated reasoning with engineering trade-offs'] : ['N/A'],
-            whatWasMissed: hasAnswer ? ['Could mention specific runtime bounds under peak load'] : ['Candidate skipped or exited before speaking an answer.'],
-            howToImprove: ['Review requirements and articulate edge case handling using STAR storytelling.'],
+            whatWentWell: hasAnswer
+              ? ['Articulated system perspective and problem domain clearly', 'Approached the question with structured communication']
+              : ['N/A'],
+            whatWasMissed: hasAnswer
+              ? ['Could incorporate specific concurrency locking mechanics, ACID guarantees, or runtime bounds under peak load']
+              : ['Candidate skipped or exited session before speaking an answer for this question.'],
+            howToImprove: ['Review question requirements and articulate trade-offs, locks, and failure recovery.'],
             modelAnswer: 'A production-grade answer begins by defining functional and non-functional requirements: high availability, idempotency, and sub-50ms latency. Use Redis Redlock with distributed TTL for inventory reservation, combined with database row-level locking (SELECT FOR UPDATE) within an ACID transaction.',
           };
 
-          const qLines = doc.splitTextToSize(`${q.question}`, contentWidth - 8);
-          const answerText = q.studentAnswer ? `"${q.studentAnswer}"` : '(No verbal answer recorded / Question was skipped)';
-          const aLines = doc.splitTextToSize(answerText, contentWidth - 12);
-          const modelLines = doc.splitTextToSize(feedback.modelAnswer || 'A production-grade answer articulates requirements and failure recovery.', contentWidth - 12);
-
-          const estimatedHeight = 16 + (qLines.length * 4) + (aLines.length * 3.5) + (Math.min(modelLines.length, 5) * 3.2) + 12;
-          checkAddPage(Math.min(estimatedHeight, 70));
-
-          // Question Header
+          // A. Question Header & Score Badge
+          checkAddPage(22);
           doc.setFont('helvetica', 'bold');
           doc.setFontSize(8.5);
           doc.setTextColor(79, 70, 229);
-          doc.text(`QUESTION #${idx + 1} · ${q.category || 'TECHNICAL ARCHITECTURE'}`, margin + 3, currentY + 4);
+          doc.text(`QUESTION #${idx + 1} · ${(q.category || 'TECHNICAL ARCHITECTURE').toUpperCase()}`, margin + 3, currentY + 4);
 
-          // Score tag
           doc.setFontSize(8.5);
           if (qScore >= 70) doc.setTextColor(5, 150, 105);
-          else if (qScore >= 30) doc.setTextColor(217, 119, 6);
+          else if (qScore >= 35) doc.setTextColor(217, 119, 6);
           else doc.setTextColor(220, 38, 38);
           doc.text(`Score: ${qScore}%`, margin + contentWidth - 25, currentY + 4);
           currentY += 7;
 
-          // Question Prompt
+          // B. Question Prompt
           doc.setFont('helvetica', 'bold');
           doc.setFontSize(8);
           doc.setTextColor(15, 23, 42);
+          const qLines = doc.splitTextToSize(q.question, contentWidth - 8);
           doc.text(qLines, margin + 3, currentY);
-          currentY += qLines.length * 4 + 2;
+          currentY += qLines.length * 3.8 + 3;
 
-          // Candidate Spoken Answer Box
+          // C. Candidate Spoken / Submitted Answer Box
+          const answerText = q.studentAnswer ? `"${q.studentAnswer}"` : '(No verbal answer recorded / Question was skipped)';
+          const aLines = doc.splitTextToSize(answerText, contentWidth - 14);
+          const aBoxH = aLines.length * 3.5 + 8;
+          checkAddPage(Math.min(aBoxH + 4, 80));
+
           doc.setFillColor(248, 250, 252);
-          doc.setDrawColor(hasAnswer ? 99 : 239, hasAnswer ? 102 : 68, hasAnswer ? 241 : 68);
+          doc.setDrawColor(hasAnswer ? 99 : 226, hasAnswer ? 102 : 232, hasAnswer ? 241 : 240);
           doc.setLineWidth(0.4);
-          const aBoxH = aLines.length * 3.5 + 6;
-          doc.rect(margin + 3, currentY, contentWidth - 6, aBoxH, 'FD');
+          doc.roundedRect(margin + 3, currentY, contentWidth - 6, aBoxH, 1.5, 1.5, 'FD');
+          doc.setDrawColor(hasAnswer ? 79 : 203, hasAnswer ? 70 : 213, hasAnswer ? 229 : 225);
+          doc.setLineWidth(1.2);
           doc.line(margin + 3, currentY, margin + 3, currentY + aBoxH);
 
           doc.setFont('helvetica', 'bold');
           doc.setFontSize(7);
-          doc.setTextColor(hasAnswer ? 79 : 220, hasAnswer ? 70 : 38, hasAnswer ? 229 : 38);
-          doc.text(hasAnswer ? 'CANDIDATE TRANSCRIBED VERBAL RESPONSE:' : 'CANDIDATE RESPONSE: (SKIPPED / UNANSWERED)', margin + 6, currentY + 4);
+          doc.setTextColor(hasAnswer ? 79 : 148, hasAnswer ? 70 : 163, hasAnswer ? 229 : 184);
+          doc.text(hasAnswer ? 'YOUR TRANSCRIBED SPOKEN ANSWER:' : 'CANDIDATE RESPONSE: (SKIPPED / UNANSWERED)', margin + 6, currentY + 4.5);
 
           doc.setFont('helvetica', hasAnswer ? 'normal' : 'italic');
-          doc.setFontSize(7.5);
+          doc.setFontSize(7.3);
           doc.setTextColor(hasAnswer ? 30 : 100, hasAnswer ? 41 : 116, hasAnswer ? 59 : 139);
-          doc.text(aLines, margin + 6, currentY + 8);
+          doc.text(aLines, margin + 6, currentY + 8.5);
           currentY += aBoxH + 3;
 
-          // Model Benchmark Answer Box
-          doc.setFillColor(250, 245, 255);
-          doc.setDrawColor(216, 180, 254);
-          const mBoxH = Math.min(modelLines.length * 3.2 + 6, 26);
-          doc.roundedRect(margin + 3, currentY, contentWidth - 6, mBoxH, 1.5, 1.5, 'FD');
+          // D. Candidate Submitted Code Solution if applicable
+          if (q.studentCode) {
+            const codeLines = doc.splitTextToSize(q.studentCode, contentWidth - 14);
+            const codeBoxH = codeLines.length * 3.2 + 8;
+            checkAddPage(Math.min(codeBoxH + 4, 80));
+
+            doc.setFillColor(15, 23, 42);
+            doc.setDrawColor(51, 65, 85);
+            doc.setLineWidth(0.4);
+            doc.roundedRect(margin + 3, currentY, contentWidth - 6, codeBoxH, 1.5, 1.5, 'FD');
+
+            doc.setFont('helvetica', 'bold');
+            doc.setFontSize(7);
+            doc.setTextColor(52, 211, 153);
+            doc.text(`SUBMITTED CODE IMPLEMENTATION (${(q.codeLanguage || 'javascript').toUpperCase()}):`, margin + 6, currentY + 4.5);
+
+            doc.setFont('courier', 'normal');
+            doc.setFontSize(6.8);
+            doc.setTextColor(241, 245, 249);
+            doc.text(codeLines, margin + 6, currentY + 8.5);
+            currentY += codeBoxH + 3;
+          }
+
+          // E. What Was Articulated Well (Strengths - Green Box)
+          const wellBullets = feedback.whatWentWell && feedback.whatWentWell.length > 0
+            ? feedback.whatWentWell
+            : ['Demonstrated foundational understanding of problem context.'];
+          const wellTextLines: string[] = [];
+          wellBullets.forEach((bullet: string) => {
+            const split = doc.splitTextToSize(`•  ${bullet}`, contentWidth - 14);
+            wellTextLines.push(...split);
+          });
+          const wellBoxH = wellTextLines.length * 3.4 + 8;
+          checkAddPage(Math.min(wellBoxH + 4, 70));
+
+          doc.setFillColor(240, 253, 244);
+          doc.setDrawColor(187, 247, 208);
+          doc.setLineWidth(0.4);
+          doc.roundedRect(margin + 3, currentY, contentWidth - 6, wellBoxH, 1.5, 1.5, 'FD');
 
           doc.setFont('helvetica', 'bold');
           doc.setFontSize(7);
-          doc.setTextColor(126, 34, 206);
-          doc.text('STAFF ENGINEER BENCHMARK ANSWER:', margin + 6, currentY + 4);
+          doc.setTextColor(22, 101, 52);
+          doc.text('✓ WHAT YOU ARTICULATED WELL (STRENGTHS):', margin + 6, currentY + 4.5);
+
+          doc.setFont('helvetica', 'normal');
+          doc.setFontSize(7.2);
+          doc.setTextColor(21, 128, 61);
+          doc.text(wellTextLines, margin + 6, currentY + 8.5);
+          currentY += wellBoxH + 3;
+
+          // F. Areas for Growth / Missed Nuance (Amber Box)
+          const missedBullets = feedback.whatWasMissed && feedback.whatWasMissed.length > 0
+            ? feedback.whatWasMissed
+            : ['Incorporate deeper runtime complexity bounds and trade-off analysis.'];
+          const missedTextLines: string[] = [];
+          missedBullets.forEach((bullet: string) => {
+            const split = doc.splitTextToSize(`•  ${bullet}`, contentWidth - 14);
+            missedTextLines.push(...split);
+          });
+          const missedBoxH = missedTextLines.length * 3.4 + 8;
+          checkAddPage(Math.min(missedBoxH + 4, 70));
+
+          doc.setFillColor(255, 251, 235);
+          doc.setDrawColor(253, 230, 138);
+          doc.setLineWidth(0.4);
+          doc.roundedRect(margin + 3, currentY, contentWidth - 6, missedBoxH, 1.5, 1.5, 'FD');
+
+          doc.setFont('helvetica', 'bold');
+          doc.setFontSize(7);
+          doc.setTextColor(146, 64, 14);
+          doc.text('⚠️ WHAT COULD BE STRENGTHENED / MISSED NUANCE:', margin + 6, currentY + 4.5);
+
+          doc.setFont('helvetica', 'normal');
+          doc.setFontSize(7.2);
+          doc.setTextColor(180, 83, 9);
+          doc.text(missedTextLines, margin + 6, currentY + 8.5);
+          currentY += missedBoxH + 3;
+
+          // G. Senior Staff Engineer Benchmark Answer (Purple Box - Full Benchmark Answer, No Truncation!)
+          const modelText = feedback.modelAnswer || 'A production-grade answer articulates requirements, system architecture trade-offs, and failure recovery.';
+          const modelLines = doc.splitTextToSize(modelText, contentWidth - 14);
+          const modelBoxH = modelLines.length * 3.4 + 8;
+          checkAddPage(Math.min(modelBoxH + 4, 90));
+
+          doc.setFillColor(250, 245, 255);
+          doc.setDrawColor(233, 213, 255);
+          doc.setLineWidth(0.4);
+          doc.roundedRect(margin + 3, currentY, contentWidth - 6, modelBoxH, 1.5, 1.5, 'FD');
+
+          doc.setFont('helvetica', 'bold');
+          doc.setFontSize(7);
+          doc.setTextColor(107, 33, 168);
+          doc.text('SENIOR STAFF ENGINEER BENCHMARK ANSWER (TIER-1 ARCHITECTURE):', margin + 6, currentY + 4.5);
 
           doc.setFont('helvetica', 'normal');
           doc.setFontSize(7.2);
           doc.setTextColor(88, 28, 135);
-          doc.text(modelLines.slice(0, 5), margin + 6, currentY + 8);
-          currentY += mBoxH + 6;
+          doc.text(modelLines, margin + 6, currentY + 8.5);
+          currentY += modelBoxH + 6;
+
+          // Divider Line between Questions
+          doc.setDrawColor(226, 232, 240);
+          doc.setLineWidth(0.3);
+          doc.line(margin + 3, currentY, margin + contentWidth - 3, currentY);
+          currentY += 5;
         });
       }
 
@@ -504,9 +600,14 @@ export const MockInterviewResultPage: React.FC = () => {
               )}
             </button>
 
-            {/* Quick Web Print Button */}
+            {/* Quick Web Print Button (Ensures all questions are expanded before printing) */}
             <button
-              onClick={() => window.print()}
+              onClick={() => {
+                if (session?.questions) {
+                  setExpandedQuestions(new Set(session.questions.map((_, i) => i)));
+                }
+                setTimeout(() => window.print(), 100);
+              }}
               className="px-3 py-1.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-[#12121c] text-xs font-semibold text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition-all flex items-center gap-1.5"
             >
               <Printer className="w-3.5 h-3.5" />

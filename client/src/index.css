@@ -156,8 +156,13 @@
   }
 
   /* Ensure all questions and answers in the report are fully expanded and visible */
-  .diagnostic-accordion-content {
+  .diagnostic-accordion-content,
+  .diagnostic-accordion-content.hidden,
+  div.diagnostic-accordion-content {
     display: block !important;
+    visibility: visible !important;
+    opacity: 1 !important;
+    height: auto !important;
   }
 
   body {
