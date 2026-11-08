@@ -123,6 +123,18 @@ export const MockInterviewSessionPage: React.FC = () => {
   // Silence Detection (Generous 4.5s natural pause before Emily responds automatically)
   const silenceTimerRef = useRef<any>(null);
 
+  // Natural Eyelid Blink Simulation for Lifelike Video Conference Feed
+  const [isEyelidBlinking, setIsEyelidBlinking] = useState<boolean>(false);
+  useEffect(() => {
+    const blinkTimer = setInterval(() => {
+      setIsEyelidBlinking(true);
+      setTimeout(() => {
+        setIsEyelidBlinking(false);
+      }, 160);
+    }, 4200);
+    return () => clearInterval(blinkTimer);
+  }, []);
+
   // Audio Web Speech Contexts
   const recognitionRef = useRef<any>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -302,6 +314,30 @@ export const MockInterviewSessionPage: React.FC = () => {
     window.speechSynthesis.speak(utterance);
   }, [startMicListening, stopMicListening]);
 
+  // 5b. Repeat Current Question explicitly on user request or voice clarification
+  const handleRepeatCurrentQuestion = useCallback(() => {
+    if (!session) return;
+    const currentQ = session.questions[currentQuestionIndex];
+    if (!currentQ) return;
+
+    clearSilenceTimer();
+    setUserSpokenAnswer('');
+    setInterimTranscript('');
+    latestSpokenAnswerRef.current = '';
+    lastSpokenTextSnapshotRef.current = '';
+
+    const text = `Let me repeat the question: ${currentQ.question}`;
+    setTranscriptMessages((prev) => [
+      ...prev,
+      {
+        sender: 'interviewer',
+        text,
+        time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      },
+    ]);
+    speakInterviewerSpeech(text);
+  }, [session, currentQuestionIndex, clearSilenceTimer, speakInterviewerSpeech]);
+
   // 6. Automatic Continuous Dialogue Processing (Candidate finishes speaking -> Emily responds!)
   const handleAutoProcessCandidateAnswer = useCallback(async () => {
     clearSilenceTimer();
@@ -313,6 +349,57 @@ export const MockInterviewSessionPage: React.FC = () => {
     if (!session || !id) return;
     const currentQ = session.questions[currentQuestionIndex];
     if (!currentQ) return;
+
+    // A. CLARIFICATION & REPEAT INTENT DETECTION (e.g., "wait once again", "repeat please", "could you repeat")
+    const repeatRegex = /\b(wait\s*once\s*again|once\s*again|repeat|repeat\s*the\s*question|say\s*(that\s*)?again|speak\s*again|pardon|didn'?t\s*hear|didn'?t\s*catch|what\s*did\s*you\s*say|could\s*you\s*repeat|can\s*you\s*repeat|say\s*it\s*again)\b/i;
+    if (repeatRegex.test(spoken)) {
+      setUserSpokenAnswer('');
+      setInterimTranscript('');
+      latestSpokenAnswerRef.current = '';
+      lastSpokenTextSnapshotRef.current = '';
+      clearSilenceTimer();
+
+      const repeatPrompt = `Sure, no problem! Let me repeat the question for you: ${currentQ.question}`;
+      setTranscriptMessages((prev) => [
+        ...prev,
+        {
+          sender: 'interviewer',
+          text: repeatPrompt,
+          time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        },
+      ]);
+      speakInterviewerSpeech(repeatPrompt);
+      return;
+    }
+
+    // B. PAUSE / THINKING INTENT DETECTION (e.g., "wait a minute", "give me a moment", "let me think")
+    const pauseRegex = /\b(wait\s*(a\s*(minute|moment|second|bit)|one\s*(second|moment|minute))?|hold\s*on|give\s*me\s*a\s*(moment|minute|second)|let\s*me\s*think|just\s*a\s*(moment|minute|second)|take\s*a\s*minute)\b/i;
+    if (pauseRegex.test(spoken)) {
+      setUserSpokenAnswer('');
+      setInterimTranscript('');
+      latestSpokenAnswerRef.current = '';
+      lastSpokenTextSnapshotRef.current = '';
+      clearSilenceTimer();
+
+      const candidateFirstName = user?.name ? user.name.split(' ')[0] : 'Mohammed';
+      const pausePrompt = `Of course, take your time ${candidateFirstName}! I'm right here listening whenever you're ready to share your answer.`;
+      setTranscriptMessages((prev) => [
+        ...prev,
+        {
+          sender: 'interviewer',
+          text: pausePrompt,
+          time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        },
+      ]);
+      speakInterviewerSpeech(pausePrompt);
+      return;
+    }
+
+    // C. MINIMUM MEANINGFUL CONTENT GUARD (Ignore accidental 1-2 words like "ok", "yes", "uh", "hmm")
+    const words = spoken.split(/\s+/).filter((w) => w.length > 1);
+    if (words.length < 3) {
+      return;
+    }
 
     isSubmittingAnswerRef.current = true;
     setConversationState('evaluating');
@@ -394,6 +481,7 @@ export const MockInterviewSessionPage: React.FC = () => {
   }, [
     session,
     id,
+    user,
     currentQuestionIndex,
     clearSilenceTimer,
     stopMicListening,
@@ -767,6 +855,46 @@ export const MockInterviewSessionPage: React.FC = () => {
             </div>
           </div>
 
+          {/* =====================================================================
+              ACTIVE INTERVIEW QUESTION BANNER (Clear prominent display so candidate never misses audio)
+              ===================================================================== */}
+          <div className="p-4 sm:p-5 m-3 sm:m-4 mb-2 rounded-2xl bg-gradient-to-br from-indigo-950/40 via-[#131525] to-[#0f101c] border border-indigo-500/40 shadow-xl space-y-3 shrink-0">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="px-2.5 py-0.5 rounded-lg bg-indigo-500/25 text-indigo-300 font-bold text-xs uppercase tracking-wider border border-indigo-500/30">
+                  Question {currentQuestionIndex + 1} of {session?.questions.length || 5}
+                </span>
+                <span className="px-2.5 py-0.5 rounded-full bg-slate-800/80 text-[10px] font-semibold text-slate-300 border border-slate-700/60 uppercase">
+                  {session?.questions[currentQuestionIndex]?.category || 'Core Architecture'}
+                </span>
+              </div>
+
+              {/* Explicit Repeat Question Button */}
+              <button
+                onClick={handleRepeatCurrentQuestion}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-200 border border-indigo-500/40 text-xs font-semibold transition-all hover:scale-105 active:scale-95 shadow-sm"
+                title="Ask Emily to repeat this question out loud"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                <span>Repeat Question</span>
+              </button>
+            </div>
+
+            {/* Active Question Text in Crisp High-Contrast Typography */}
+            <h2 className="text-sm sm:text-base font-bold text-white leading-relaxed">
+              {session?.questions[currentQuestionIndex]?.question ||
+                'Tell me about yourself and your journey in software development.'}
+            </h2>
+
+            {/* Live Speech Captions Bar during Emily's voice */}
+            {conversationState === 'interviewer_speaking' && currentInterviewerCaption && (
+              <div className="flex items-start gap-2 text-xs text-emerald-300 bg-emerald-950/30 p-2.5 rounded-xl border border-emerald-500/30 animate-fade-in">
+                <Volume2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5 animate-pulse" />
+                <span className="italic leading-relaxed">"{currentInterviewerCaption}"</span>
+              </div>
+            )}
+          </div>
+
           {/* Talking Points Card Header */}
           <div className="p-4 sm:p-6 space-y-3 shrink-0">
             <div className="flex items-center justify-between">
@@ -843,10 +971,10 @@ export const MockInterviewSessionPage: React.FC = () => {
             ----------------------------------------------------------------------- */}
         <section className="col-span-12 lg:col-span-3 bg-[#0e0f17] flex flex-col p-4 gap-4 h-full overflow-y-auto pb-24">
           
-          {/* 1. Emily Zhou Interviewer Video Tile (Photo 4 Top Right - Clean Static Portrait) */}
-          <div className="rounded-2xl border border-slate-800 bg-[#12131f] overflow-hidden shadow-lg shrink-0">
-            <div className="relative aspect-video w-full bg-slate-950 flex items-center justify-center overflow-hidden">
-              {/* Completely Static Crisp Interviewer Photo - No Shaking or Movement */}
+          {/* 1. Emily Zhou Interviewer Video Tile - 1080p HD Live Video Conference Feed */}
+          <div className="rounded-2xl border border-slate-700/80 bg-[#12131f] overflow-hidden shadow-2xl shrink-0 ring-1 ring-slate-800">
+            <div className="relative aspect-video w-full bg-slate-950 flex items-center justify-center overflow-hidden group">
+              {/* Live Video Feed Image with subtle organic micro-drift */}
               <div className="w-full h-full relative overflow-hidden bg-slate-950">
                 <img
                   src={
@@ -854,62 +982,143 @@ export const MockInterviewSessionPage: React.FC = () => {
                     'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?w=800&auto=format&fit=crop&q=80'
                   }
                   alt={session?.interviewerName || 'Emily Zhou'}
-                  className="w-full h-full object-cover object-top select-none pointer-events-none"
+                  className={`w-full h-full object-cover object-top select-none pointer-events-none transition-transform duration-700 ${
+                    conversationState === 'interviewer_speaking'
+                      ? 'animate-video-feed'
+                      : 'scale-100'
+                  }`}
                 />
+
+                {/* Natural Eyelid Blink Simulation Overlay (Smooth 160ms cycle every 4.2s) */}
+                {isEyelidBlinking && (
+                  <div
+                    className="absolute inset-0 pointer-events-none bg-slate-900/50 backdrop-blur-[1px] transition-opacity duration-150"
+                    style={{
+                      clipPath: 'ellipse(22% 8% at 50% 38%)',
+                    }}
+                  />
+                )}
+
+                {/* Organic Mouth / Speech Dynamics when Interviewer is speaking */}
+                {conversationState === 'interviewer_speaking' && (
+                  <div
+                    className="absolute pointer-events-none animate-mouth-viseme"
+                    style={{
+                      top: '55%',
+                      left: '46%',
+                      width: '9%',
+                      height: '4%',
+                      borderRadius: '9999px',
+                      background:
+                        'radial-gradient(circle, rgba(160, 60, 60, 0.45) 0%, rgba(120, 40, 40, 0.15) 70%, transparent 100%)',
+                      mixBlendMode: 'multiply',
+                    }}
+                  />
+                )}
+
+                {/* Authentic Video Feed Scanline Overlay */}
+                <div className="absolute inset-0 pointer-events-none bg-[linear-gradient(rgba(18,16,16,0)_50%,rgba(0,0,0,0.18)_50%)] bg-[length:100%_4px] opacity-25" />
               </div>
 
-              {/* Pulsing Speaking Wave Ring when Emily is speaking */}
+              {/* Top Bar inside Video Call: [● 1080p HD Live] and [18ms latency] */}
+              <div className="absolute top-2 left-2 right-2 flex items-center justify-between pointer-events-none z-10">
+                <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-black/75 backdrop-blur-md border border-slate-700/50 shadow-md">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shadow-[0_0_8px_#34d399]" />
+                  <span className="text-[10px] font-bold text-white tracking-wider">
+                    1080p HD LIVE
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-black/70 backdrop-blur-md border border-slate-800 text-[9px] font-mono text-slate-300">
+                  <Radio className="w-2.5 h-2.5 text-emerald-400 animate-pulse" />
+                  <span>18ms</span>
+                </div>
+              </div>
+
+              {/* Active Green Wave Ring when Emily is speaking */}
               {conversationState === 'interviewer_speaking' && (
                 <>
-                  <div className="absolute inset-0 border-2 border-emerald-500/80 rounded-2xl pointer-events-none" />
-                  {/* Dancing Live Audio Equalizer Waveform Overlay */}
-                  <div className="absolute bottom-2 left-2 flex items-end gap-1 px-2.5 py-1 rounded-full bg-black/80 backdrop-blur-md">
-                    <span className="w-0.5 bg-emerald-400 rounded-full animate-bounce h-2.5" />
-                    <span className="w-0.5 bg-emerald-300 rounded-full animate-bounce h-4.5 delay-75" />
-                    <span className="w-0.5 bg-emerald-400 rounded-full animate-bounce h-2 delay-150" />
-                    <span className="w-0.5 bg-emerald-300 rounded-full animate-bounce h-3.5 delay-100" />
-                    <span className="w-0.5 bg-emerald-400 rounded-full animate-bounce h-3 delay-200" />
-                    <span className="text-[9px] font-bold text-emerald-300 ml-1 uppercase">Voice Stream</span>
+                  <div className="absolute inset-0 border-2 border-emerald-400/90 rounded-2xl pointer-events-none shadow-[inset_0_0_20px_rgba(52,211,153,0.25)]" />
+                  
+                  {/* Equalizer Waveform Bars & Replay Action */}
+                  <div className="absolute bottom-2 left-2 right-2 flex items-center justify-between pointer-events-auto z-10">
+                    <div className="flex items-end gap-1 px-2.5 py-1 rounded-full bg-black/85 backdrop-blur-md border border-emerald-500/30">
+                      <span className="w-0.5 bg-emerald-400 rounded-full wave-bar-1 h-3" />
+                      <span className="w-0.5 bg-emerald-300 rounded-full wave-bar-2 h-4" />
+                      <span className="w-0.5 bg-emerald-400 rounded-full wave-bar-3 h-2.5" />
+                      <span className="w-0.5 bg-emerald-300 rounded-full wave-bar-4 h-3.5" />
+                      <span className="w-0.5 bg-emerald-400 rounded-full wave-bar-5 h-2" />
+                      <span className="text-[9px] font-bold text-emerald-300 ml-1 uppercase tracking-wide">
+                        Voice Active
+                      </span>
+                    </div>
+
+                    <button
+                      onClick={handleRepeatCurrentQuestion}
+                      className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-indigo-600/90 hover:bg-indigo-500 text-white text-[10px] font-bold shadow-lg transition-transform hover:scale-105 active:scale-95"
+                      title="Replay Emily's voice"
+                    >
+                      <RotateCcw className="w-3 h-3" />
+                      <span>Replay</span>
+                    </button>
                   </div>
                 </>
               )}
 
               {/* Attentive Listening Badge when Candidate speaks */}
               {conversationState === 'listening' && (
-                <div className="absolute bottom-2 left-2 flex items-center gap-1 px-2 py-0.5 rounded-full bg-black/75 backdrop-blur-md text-[10px] font-medium text-emerald-300">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                  <span>Attentive · Listening</span>
+                <div className="absolute bottom-2 left-2 right-2 flex items-center justify-between pointer-events-auto z-10">
+                  <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-black/80 backdrop-blur-md border border-slate-700/60 text-[10px] font-medium text-emerald-300">
+                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shadow-[0_0_6px_#34d399]" />
+                    <span>Attentive · Listening</span>
+                  </div>
+
+                  <button
+                    onClick={handleRepeatCurrentQuestion}
+                    className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-800/90 hover:bg-slate-700 text-slate-300 text-[10px] font-semibold border border-slate-700 transition-colors"
+                    title="Repeat Question"
+                  >
+                    <RotateCcw className="w-2.5 h-2.5" />
+                    <span>Repeat</span>
+                  </button>
                 </div>
               )}
 
               {/* Live Status Pill Top Right */}
-              <div className="absolute top-2 right-2 px-2 py-0.5 rounded-full bg-black/75 backdrop-blur-md text-[10px] font-bold text-emerald-400 flex items-center gap-1">
-                <span
-                  className={`w-1.5 h-1.5 rounded-full ${
-                    conversationState === 'interviewer_speaking'
-                      ? 'bg-emerald-400 animate-ping'
-                      : conversationState === 'evaluating'
-                      ? 'bg-amber-400 animate-pulse'
-                      : 'bg-emerald-400'
-                  }`}
-                />
-                <span>
-                  {conversationState === 'interviewer_speaking'
-                    ? 'Speaking'
-                    : conversationState === 'evaluating'
-                    ? 'Thinking'
-                    : 'Listening'}
-                </span>
-              </div>
+              {conversationState === 'evaluating' && (
+                <div className="absolute bottom-2 left-2 flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-black/80 backdrop-blur-md border border-indigo-500/40 text-[10px] font-semibold text-indigo-300 z-10">
+                  <span className="w-2 h-2 rounded-full bg-indigo-400 animate-ping" />
+                  <span>Evaluating Answer...</span>
+                </div>
+              )}
             </div>
 
-            <div className="p-3 text-center">
-              <h3 className="font-bold text-white text-xs">
-                {session?.interviewerName || 'Emily Zhou'}
-              </h3>
-              <p className="text-[11px] text-slate-400">
-                {session?.interviewerRole || 'Senior Software Engineer'}
-              </p>
+            <div className="p-3 bg-[#11121d] flex items-center justify-between border-t border-slate-800">
+              <div>
+                <h3 className="font-bold text-white text-xs flex items-center gap-1.5">
+                  <span>{session?.interviewerName || 'Emily Zhou'}</span>
+                  <span className="text-[10px] font-normal text-slate-400">· Amazon</span>
+                </h3>
+                <p className="text-[11px] text-slate-400">
+                  {session?.interviewerRole || 'Senior Software Engineer'}
+                </p>
+              </div>
+
+              <span
+                className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                  conversationState === 'interviewer_speaking'
+                    ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                    : conversationState === 'listening'
+                    ? 'bg-teal-500/20 text-teal-300 border border-teal-500/30'
+                    : 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/30'
+                }`}
+              >
+                {conversationState === 'interviewer_speaking'
+                  ? 'Speaking'
+                  : conversationState === 'listening'
+                  ? 'Listening'
+                  : 'Analyzing'}
+              </span>
             </div>
           </div>
 
@@ -948,6 +1157,13 @@ export const MockInterviewSessionPage: React.FC = () => {
                 <MessageSquare className="w-3 h-3 text-slate-400" />
                 <span>Transcript</span>
               </button>
+            </div>
+
+            <div className="p-2.5 bg-[#11121d] flex items-center justify-between border-t border-slate-800 text-xs">
+              <span className="font-semibold text-slate-200">
+                {user?.name || 'Mohammed Hassan Ahmed'}
+              </span>
+              <span className="text-[10px] text-emerald-400 font-mono">Candidate · Connected</span>
             </div>
           </div>
 
