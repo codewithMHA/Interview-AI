@@ -191,7 +191,7 @@ class DevStore {
     const hashedPassword = bcrypt.hashSync('Placement2026!', 10);
     this.users.set('student@placement.edu', {
       id: demoId,
-      name: 'Mohammed Farooq',
+      name: 'Mohammed Hassan Ahmed',
       email: 'student@placement.edu',
       password: hashedPassword,
       role: 'student',
@@ -200,7 +200,7 @@ class DevStore {
 
     this.profiles.set(demoId, {
       userId: demoId,
-      name: 'Mohammed Farooq',
+      name: 'Mohammed Hassan Ahmed',
       email: 'student@placement.edu',
       college: 'National Institute of Technology',
       degree: 'B.Tech in Computer Science & Engineering',
@@ -209,8 +209,8 @@ class DevStore {
       experienceLevel: 'Intermediate',
       programmingLanguages: ['JavaScript', 'TypeScript', 'Python', 'C++'],
       skills: ['Data Structures', 'Algorithms', 'React', 'Node.js', 'MongoDB', 'System Design'],
-      githubProfile: 'https://github.com/mohammed-farooq',
-      linkedinProfile: 'https://linkedin.com/in/mohammed-farooq',
+      githubProfile: 'https://github.com/codewithMHA',
+      linkedinProfile: 'https://linkedin.com/in/mohammed-hassan-ahmed',
       preparationScore: 78,
       streakCount: 2,
       xpPoints: 820,

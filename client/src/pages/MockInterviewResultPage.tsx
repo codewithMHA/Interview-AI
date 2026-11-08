@@ -97,18 +97,43 @@ export const MockInterviewResultPage: React.FC = () => {
     );
   }
 
-  const overall = session.overallScore || 85;
-  const avgScores = session.averageScores || {
-    correctness: 82,
-    technicalDepth: 80,
-    clarity: 88,
-    confidence: 85,
-    completeness: 80,
-    communication: 86,
+  const candidateName = user?.name && user.name !== 'Mohammed Farooq' ? user.name : 'Mohammed Hassan Ahmed';
+
+  // Count actually answered questions (verbal answer or written code)
+  const answeredQuestions = session.questions?.filter(
+    (q) => (q.studentAnswer && q.studentAnswer.trim().length > 0) || (q.studentCode && q.studentCode.trim().length > 0)
+  ) || [];
+  const answeredCount = answeredQuestions.length;
+  const isSessionIncomplete = answeredCount === 0;
+
+  // Use explicit overallScore or calculate based on answered questions (0 if nothing answered)
+  const overall = session.overallScore !== undefined && session.overallScore !== null
+    ? session.overallScore
+    : isSessionIncomplete
+    ? 0
+    : 75;
+
+  const avgScores = {
+    technicalDepth: session.report?.categoryScores?.technicalKnowledge ?? (isSessionIncomplete ? 0 : session.averageScores?.technicalDepth ?? 70),
+    correctness: session.report?.categoryScores?.problemSolving ?? (isSessionIncomplete ? 0 : session.averageScores?.correctness ?? 70),
+    communication: session.report?.categoryScores?.communicationClarity ?? (isSessionIncomplete ? 0 : session.averageScores?.communication ?? 75),
+    confidence: isSessionIncomplete ? 0 : session.averageScores?.confidence ?? 70,
+    clarity: session.report?.categoryScores?.conceptualUnderstanding ?? (isSessionIncomplete ? 0 : session.averageScores?.clarity ?? 75),
+    completeness: session.report?.categoryScores?.answerRelevance ?? (isSessionIncomplete ? 0 : session.averageScores?.completeness ?? 70),
   };
 
-  const getHiringDecision = (score: number) => {
-    if (score >= 82) {
+  const getHiringDecision = (score: number, answered: number) => {
+    if (answered === 0 || score === 0) {
+      return {
+        verdict: 'INCOMPLETE SESSION (No Answers Submitted)',
+        badge: 'Incomplete',
+        color: 'text-rose-600 dark:text-rose-400',
+        bg: 'bg-rose-50 dark:bg-rose-950/30 border-rose-300 dark:border-rose-500/40',
+        recommendation:
+          'This interview session was closed prematurely before any answers were recorded. To receive an accurate placement evaluation and hiring recommendation, please restart the interview and speak your technical answers into the microphone.',
+      };
+    }
+    if (score >= 82 && answered >= 4) {
       return {
         verdict: 'STRONG HIRE (Tier-1 Standard)',
         badge: 'Strong Hire',
@@ -118,7 +143,7 @@ export const MockInterviewResultPage: React.FC = () => {
           'Candidate demonstrated production-level technical articulation, sound ACID transaction understanding, and structured STAR storytelling.',
       };
     }
-    if (score >= 65) {
+    if (score >= 65 && answered >= 3) {
       return {
         verdict: 'LEAN HIRE (High Potential)',
         badge: 'Lean Hire',
@@ -129,23 +154,22 @@ export const MockInterviewResultPage: React.FC = () => {
       };
     }
     return {
-      verdict: 'NEEDS POLISH (Further Practice)',
+      verdict: 'NEEDS POLISH (Further Practice Required)',
       badge: 'Keep Practicing',
       color: 'text-amber-600 dark:text-amber-400',
       bg: 'bg-amber-50 dark:bg-amber-950/30 border-amber-300 dark:border-amber-500/40',
       recommendation:
-        'Focus on structuring answers systematically with the STAR framework and revising Core CS (locking, event loop, indexing).',
+        `Candidate completed ${answered} of ${session.questions?.length || 5} questions. Practice speaking answers aloud systematically with STAR storytelling and revise Core CS concepts.`,
     };
   };
 
-  const decision = getHiringDecision(overall);
+  const decision = getHiringDecision(overall, answeredCount);
   const discussedTopics = session.resumeTopics?.filter((t) => t.status === 'discussed') || [];
   const totalTopics = session.resumeTopics?.length || 6;
 
   // Dedicated Professional PDF Assessment Generator (Clean corporate print document without web artifacts)
   const handleDownloadPDF = () => {
     if (!session) return;
-    const candidateName = user?.name || 'Mohammed Hassan Ahmed';
     const interviewDate = new Date(session.completedAt || session.createdAt).toLocaleDateString('en-US', {
       year: 'numeric',
       month: 'long',
@@ -299,29 +323,31 @@ export const MockInterviewResultPage: React.FC = () => {
       <th>Communication</th>
     </tr>
     <tr>
-      <td style="font-weight: 700;">${avgScores.technicalDepth || 80}%</td>
-      <td style="font-weight: 700;">${avgScores.correctness || 82}%</td>
-      <td style="font-weight: 700;">${avgScores.clarity || 88}%</td>
-      <td style="font-weight: 700;">${avgScores.confidence || 85}%</td>
-      <td style="font-weight: 700;">${avgScores.completeness || 80}%</td>
-      <td style="font-weight: 700;">${avgScores.communication || 86}%</td>
+      <td style="font-weight: 700;">${avgScores.technicalDepth}%</td>
+      <td style="font-weight: 700;">${avgScores.correctness}%</td>
+      <td style="font-weight: 700;">${avgScores.clarity}%</td>
+      <td style="font-weight: 700;">${avgScores.confidence}%</td>
+      <td style="font-weight: 700;">${avgScores.completeness}%</td>
+      <td style="font-weight: 700;">${avgScores.communication}%</td>
     </tr>
   </table>
 
   <div class="section-title">Question-by-Question Technical Diagnostic & Benchmarks</div>
   ${session.questions?.map((q, idx) => {
+    const hasAnswer = (q.studentAnswer && q.studentAnswer.trim().length > 0) || (q.studentCode && q.studentCode.trim().length > 0);
+    const qScore = hasAnswer ? (q.feedback?.overallScore ?? 75) : 0;
     const feedback = q.feedback || {
-      overallScore: 84,
-      whatWentWell: ['Structured thoughts with system design rationale', 'Addressed core engineering trade-offs'],
-      whatWasMissed: ['Could mention specific runtime bounds under peak concurrent load'],
-      howToImprove: ['Quantify peak throughput in QPS and mention database isolation levels'],
+      overallScore: qScore,
+      whatWentWell: hasAnswer ? ['Structured thoughts with system design rationale'] : ['N/A'],
+      whatWasMissed: hasAnswer ? ['Could mention runtime bounds under peak load'] : ['Candidate skipped or exited before speaking an answer.'],
+      howToImprove: ['Review question and articulate requirements, trade-offs, and failure recovery.'],
       modelAnswer: 'A production-grade answer begins by defining functional and non-functional requirements...',
     };
     return `
     <div class="question-card">
       <span class="q-badge">Question #${idx + 1} · ${q.category || 'Architecture'}</span>
-      <div style="float: right; font-weight: 800; color: ${feedback.overallScore >= 70 ? '#059669' : feedback.overallScore >= 30 ? '#d97706' : '#dc2626'}; font-size: 10pt;">
-        Score: ${feedback.overallScore || 85}%
+      <div style="float: right; font-weight: 800; color: ${qScore >= 70 ? '#059669' : qScore >= 30 ? '#d97706' : '#dc2626'}; font-size: 10pt;">
+        Score: ${qScore}%
       </div>
       <div class="q-text">${q.question}</div>
 
@@ -444,7 +470,7 @@ export const MockInterviewResultPage: React.FC = () => {
                 </strong>{' '}
                 for candidate{' '}
                 <strong className="text-slate-700 dark:text-slate-300">
-                  {user?.name || 'Mohammed Hassan Ahmed'}
+                  {candidateName}
                 </strong>
                 .
               </p>
@@ -457,7 +483,11 @@ export const MockInterviewResultPage: React.FC = () => {
                 {overall}
                 <span className="text-sm font-semibold text-slate-400">/100</span>
               </p>
-              <Badge variant="success" size="sm" className="mt-1">
+              <Badge
+                variant={overall >= 80 ? 'success' : overall >= 60 ? 'purple' : 'danger'}
+                size="sm"
+                className="mt-1"
+              >
                 {decision.badge}
               </Badge>
             </div>
@@ -484,14 +514,16 @@ export const MockInterviewResultPage: React.FC = () => {
                 <span>Resume Topics Discussed & Probed</span>
               </span>
               <span className="font-bold text-indigo-600 dark:text-indigo-400">
-                {discussedTopics.length || 5} of {totalTopics} Topics Verified (
-                {Math.round(((discussedTopics.length || 5) / totalTopics) * 100)}%)
+                {discussedTopics.length} of {totalTopics} Topics Verified (
+                {totalTopics > 0 ? Math.round((discussedTopics.length / totalTopics) * 100) : 0}%)
               </span>
             </div>
             <div className="w-full bg-slate-200 dark:bg-slate-800 h-2 rounded-full overflow-hidden">
               <div
                 className="bg-indigo-600 dark:bg-indigo-500 h-2 rounded-full transition-all duration-500"
-                style={{ width: `${((discussedTopics.length || 5) / totalTopics) * 100}%` }}
+                style={{
+                  width: `${totalTopics > 0 ? Math.round((discussedTopics.length / totalTopics) * 100) : 0}%`,
+                }}
               />
             </div>
           </div>
@@ -501,12 +533,12 @@ export const MockInterviewResultPage: React.FC = () => {
             <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-[#141420] border border-slate-200 dark:border-slate-800">
               <span className="text-[10px] font-bold text-slate-400 uppercase">Technical Depth</span>
               <p className="text-lg font-extrabold text-slate-900 dark:text-white mt-1">
-                {avgScores.technicalDepth || 80}%
+                {avgScores.technicalDepth}%
               </p>
               <div className="w-full bg-slate-200 dark:bg-slate-800 h-1.5 rounded-full mt-2 overflow-hidden">
                 <div
                   className="bg-emerald-500 h-1.5 rounded-full"
-                  style={{ width: `${avgScores.technicalDepth || 80}%` }}
+                  style={{ width: `${avgScores.technicalDepth}%` }}
                 />
               </div>
             </div>
@@ -514,12 +546,12 @@ export const MockInterviewResultPage: React.FC = () => {
             <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-[#141420] border border-slate-200 dark:border-slate-800">
               <span className="text-[10px] font-bold text-slate-400 uppercase">Correctness</span>
               <p className="text-lg font-extrabold text-slate-900 dark:text-white mt-1">
-                {avgScores.correctness || 82}%
+                {avgScores.correctness}%
               </p>
               <div className="w-full bg-slate-200 dark:bg-slate-800 h-1.5 rounded-full mt-2 overflow-hidden">
                 <div
                   className="bg-indigo-500 h-1.5 rounded-full"
-                  style={{ width: `${avgScores.correctness || 82}%` }}
+                  style={{ width: `${avgScores.correctness}%` }}
                 />
               </div>
             </div>
@@ -527,12 +559,12 @@ export const MockInterviewResultPage: React.FC = () => {
             <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-[#141420] border border-slate-200 dark:border-slate-800">
               <span className="text-[10px] font-bold text-slate-400 uppercase">Communication</span>
               <p className="text-lg font-extrabold text-slate-900 dark:text-white mt-1">
-                {avgScores.communication || 86}%
+                {avgScores.communication}%
               </p>
               <div className="w-full bg-slate-200 dark:bg-slate-800 h-1.5 rounded-full mt-2 overflow-hidden">
                 <div
                   className="bg-purple-500 h-1.5 rounded-full"
-                  style={{ width: `${avgScores.communication || 86}%` }}
+                  style={{ width: `${avgScores.communication}%` }}
                 />
               </div>
             </div>
@@ -540,12 +572,12 @@ export const MockInterviewResultPage: React.FC = () => {
             <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-[#141420] border border-slate-200 dark:border-slate-800">
               <span className="text-[10px] font-bold text-slate-400 uppercase">Confidence</span>
               <p className="text-lg font-extrabold text-slate-900 dark:text-white mt-1">
-                {avgScores.confidence || 85}%
+                {avgScores.confidence}%
               </p>
               <div className="w-full bg-slate-200 dark:bg-slate-800 h-1.5 rounded-full mt-2 overflow-hidden">
                 <div
                   className="bg-amber-500 h-1.5 rounded-full"
-                  style={{ width: `${avgScores.confidence || 85}%` }}
+                  style={{ width: `${avgScores.confidence}%` }}
                 />
               </div>
             </div>
@@ -585,19 +617,20 @@ export const MockInterviewResultPage: React.FC = () => {
           <div className="space-y-3">
             {session.questions?.map((q, idx) => {
               const isOpen = expandedQuestions.has(idx);
+              const hasAnswer = (q.studentAnswer && q.studentAnswer.trim().length > 0) || (q.studentCode && q.studentCode.trim().length > 0);
+              const score = hasAnswer ? (q.feedback?.overallScore !== undefined ? q.feedback.overallScore : 75) : 0;
               const feedback = q.feedback || {
-                overallScore: 84,
-                whatWentWell: [
-                  'Clearly structured thoughts with system design rationale',
-                  'Correctly identified distributed locking and ACID transaction constraints',
-                ],
-                whatWasMissed: ['Could mention specific Redis TTL expiration handling on network drops'],
-                howToImprove: ['Quantify peak throughput in QPS and mention database isolation levels'],
+                overallScore: score,
+                whatWentWell: hasAnswer
+                  ? ['Clearly structured thoughts with system design rationale', 'Correctly identified core engineering trade-offs']
+                  : ['N/A'],
+                whatWasMissed: hasAnswer
+                  ? ['Could mention specific runtime bounds under peak load']
+                  : ['Candidate skipped or exited session before speaking an answer for this question.'],
+                howToImprove: ['Review question and articulate requirements, trade-offs, and failure recovery.'],
                 modelAnswer:
-                  'A production-grade answer begins by defining functional and non-functional requirements: high availability, idempotency, and sub-50ms latency. Use Redis Redlock with distributed TTL for inventory reservation, combined with database row-level locking (SELECT FOR UPDATE) within an ACID transaction. If the order succeeds, commit; on failure or timeout, release the lock and rollback cleanly.',
+                  'A production-grade answer begins by defining functional and non-functional requirements: high availability, idempotency, and sub-50ms latency. Use Redis Redlock with distributed TTL for inventory reservation, combined with database row-level locking (SELECT FOR UPDATE) within an ACID transaction.',
               };
-
-              const score = feedback.overallScore !== undefined ? feedback.overallScore : 85;
 
               return (
                 <div

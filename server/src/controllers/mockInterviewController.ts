@@ -673,8 +673,54 @@ export const updateTopicStatus = async (req: Request, res: Response): Promise<vo
 // HELPER: GENERATE COMPREHENSIVE FINAL REPORT (Section 9)
 // =========================================================================
 function generateComprehensiveReport(interview: any): any {
-  const answered = interview.questions.filter((q: any) => q.studentAnswer || q.studentCode);
-  const count = answered.length || 1;
+  const totalQuestions = interview.questions?.length || 5;
+  const answered = interview.questions.filter((q: any) => {
+    const spoken = (q.studentAnswer || '').trim();
+    const code = (q.studentCode || '').trim();
+    return spoken.length > 0 || code.length > 0;
+  });
+  const answeredCount = answered.length;
+
+  // Handle case where candidate exits or ends session without providing answers
+  if (answeredCount === 0) {
+    return {
+      overallScore: 0,
+      completionStatus: 'incomplete',
+      questionsAnswered: 0,
+      questionsSkipped: totalQuestions,
+      totalDurationMinutes: interview.duration || 30,
+      categoryScores: {
+        technicalKnowledge: 0,
+        communicationClarity: 0,
+        problemSolving: 0,
+        answerRelevance: 0,
+        conceptualUnderstanding: 0,
+      },
+      detailedFeedback: {
+        strongAnswers: [],
+        weakAnswers: ['The interview was ended before any technical questions were answered.'],
+        missedConcepts: ['No technical responses were recorded for evaluation.'],
+        areasToImprove: ['Speak your technical answers clearly into the microphone or submit code in the workspace.'],
+      },
+      answerImprovements: interview.questions.map((q: any) => ({
+        questionId: q.id,
+        question: q.question,
+        studentAnswer: 'No answer recorded (Session ended prematurely)',
+        studentCode: q.studentCode,
+        whatWasGood: 'N/A',
+        whatWasMissing: 'Candidate did not speak or submit an answer for this question.',
+        suggestedAnswer: q.feedback?.modelAnswer || 'A production-grade answer articulates core requirements, concurrency trade-offs, and failure recovery.',
+      })),
+      recommendations: {
+        preparationLevel: 'Did Not Complete (Incomplete)',
+        recommendedTopics: [
+          'Enable microphone permissions and practice speaking technical answers aloud',
+          'Review Core CS fundamentals and Project Architecture',
+        ],
+        suggestedNextInterview: 'Restart AI Mock Interview and complete all questions',
+      },
+    };
+  }
 
   let totalScore = 0;
   const totals = {
@@ -694,14 +740,16 @@ function generateComprehensiveReport(interview: any): any {
 
   for (const q of interview.questions) {
     const fb = q.feedback;
-    if (fb) {
-      totalScore += fb.overallScore;
-      totals.correctness += fb.scores?.correctness || 70;
-      totals.technicalDepth += fb.scores?.technicalDepth || 70;
-      totals.clarity += fb.scores?.clarity || 75;
-      totals.confidence += fb.scores?.confidence || 75;
-      totals.completeness += fb.scores?.completeness || 70;
-      totals.communication += fb.scores?.communication || 75;
+    const hasAnswer = (q.studentAnswer && q.studentAnswer.trim().length > 0) || (q.studentCode && q.studentCode.trim().length > 0);
+
+    if (fb && hasAnswer) {
+      totalScore += fb.overallScore || 0;
+      totals.correctness += fb.scores?.correctness || 0;
+      totals.technicalDepth += fb.scores?.technicalDepth || 0;
+      totals.clarity += fb.scores?.clarity || 0;
+      totals.confidence += fb.scores?.confidence || 0;
+      totals.completeness += fb.scores?.completeness || 0;
+      totals.communication += fb.scores?.communication || 0;
 
       if (fb.overallScore >= 75) {
         strongAnswers.push(`Question: "${q.question}" - Strong explanation of core mechanics.`);
@@ -725,22 +773,39 @@ function generateComprehensiveReport(interview: any): any {
         whatWasMissing: fb.whatWasMissed?.[0] || 'Omitted edge case failure modes',
         suggestedAnswer: fb.modelAnswer || 'A production-grade answer articulates requirements, trade-offs, and failure recovery.',
       });
+    } else {
+      // Unanswered question counted as 0
+      weakAnswers.push(`Question: "${q.question}" - Skipped or unanswered.`);
+      answerImprovements.push({
+        questionId: q.id,
+        question: q.question,
+        studentAnswer: 'Unanswered / Skipped',
+        studentCode: q.studentCode,
+        whatWasGood: 'N/A',
+        whatWasMissing: 'Candidate skipped this question.',
+        suggestedAnswer: fb?.modelAnswer || 'A production-grade answer articulates requirements, trade-offs, and failure recovery.',
+      });
     }
   }
 
-  const overallScore = Math.round(totalScore / count) || 82;
+  // Fairly normalize score across all interview questions (unanswered questions reduce score)
+  const overallScore = Math.min(100, Math.max(0, Math.round(totalScore / totalQuestions)));
 
-  // Category scores (out of 100)
+  // Category scores (out of 100) normalized across total questions
   const categoryScores = {
-    technicalKnowledge: Math.round(totals.technicalDepth / count) || 80,
-    communicationClarity: Math.round(totals.communication / count) || 85,
-    problemSolving: Math.round(totals.correctness / count) || 78,
-    answerRelevance: Math.round(totals.completeness / count) || 82,
-    conceptualUnderstanding: Math.round(totals.clarity / count) || 84,
+    technicalKnowledge: Math.min(100, Math.round(totals.technicalDepth / totalQuestions)),
+    communicationClarity: Math.min(100, Math.round(totals.communication / totalQuestions)),
+    problemSolving: Math.min(100, Math.round(totals.correctness / totalQuestions)),
+    answerRelevance: Math.min(100, Math.round(totals.completeness / totalQuestions)),
+    conceptualUnderstanding: Math.min(100, Math.round(totals.clarity / totalQuestions)),
   };
 
   const prepLevel =
-    overallScore >= 80 ? 'Placement Ready' : overallScore >= 65 ? 'Intermediate' : 'Beginner';
+    overallScore >= 80 && answeredCount >= 4
+      ? 'Placement Ready'
+      : overallScore >= 60 && answeredCount >= 3
+      ? 'Intermediate'
+      : 'Needs Further Practice';
 
   const defaultTopics = [
     'Concurrency & Distributed Locks (ACID / Redis / DB Locks)',
@@ -751,9 +816,9 @@ function generateComprehensiveReport(interview: any): any {
 
   return {
     overallScore,
-    completionStatus: 'completed',
-    questionsAnswered: answered.length,
-    questionsSkipped: interview.questions.length - answered.length,
+    completionStatus: answeredCount === totalQuestions ? 'completed' : 'partially_completed',
+    questionsAnswered: answeredCount,
+    questionsSkipped: totalQuestions - answeredCount,
     totalDurationMinutes: interview.duration || 30,
     categoryScores,
     detailedFeedback: {

@@ -68,6 +68,7 @@ import {
 } from '@/types';
 import { Button } from '@/components/common/Button';
 import { Badge } from '@/components/common/Badge';
+import { EmilyAIVideoAvatar } from '@/components/interview/EmilyAIVideoAvatar';
 import { useAuth } from '@/context/AuthContext';
 import { useTheme } from '@/context/ThemeContext';
 
@@ -77,6 +78,7 @@ export const MockInterviewSessionPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { user } = useAuth();
+  const candidateName = user?.name && user.name !== 'Mohammed Farooq' ? user.name : 'Mohammed Hassan Ahmed';
   const { theme, toggleTheme } = useTheme();
 
   // Core Session State
@@ -122,18 +124,6 @@ export const MockInterviewSessionPage: React.FC = () => {
 
   // Silence Detection (Generous 4.5s natural pause before Emily responds automatically)
   const silenceTimerRef = useRef<any>(null);
-
-  // Natural Eyelid Blink Simulation for Lifelike Video Conference Feed
-  const [isEyelidBlinking, setIsEyelidBlinking] = useState<boolean>(false);
-  useEffect(() => {
-    const blinkTimer = setInterval(() => {
-      setIsEyelidBlinking(true);
-      setTimeout(() => {
-        setIsEyelidBlinking(false);
-      }, 160);
-    }, 4200);
-    return () => clearInterval(blinkTimer);
-  }, []);
 
   // Audio Web Speech Contexts
   const recognitionRef = useRef<any>(null);
@@ -381,7 +371,7 @@ export const MockInterviewSessionPage: React.FC = () => {
       lastSpokenTextSnapshotRef.current = '';
       clearSilenceTimer();
 
-      const candidateFirstName = user?.name ? user.name.split(' ')[0] : 'Mohammed';
+      const candidateFirstName = candidateName ? candidateName.split(' ')[0] : 'Mohammed';
       const pausePrompt = `Of course, take your time ${candidateFirstName}! I'm right here listening whenever you're ready to share your answer.`;
       setTranscriptMessages((prev) => [
         ...prev,
@@ -467,7 +457,7 @@ export const MockInterviewSessionPage: React.FC = () => {
         // Complete interview session naturally
         const closing =
           result?.interviewerSpeech ||
-          `Thank you ${user?.name || 'Mohammed Hassan Ahmed'}. That gives me a thorough understanding of your technical background and projects. I am preparing your performance evaluation report now.`;
+          `Thank you ${candidateName}. That gives me a thorough understanding of your technical background and projects. I am preparing your performance evaluation report now.`;
         speakInterviewerSpeech(closing, () => {
           handleEndSession();
         });
@@ -620,7 +610,7 @@ export const MockInterviewSessionPage: React.FC = () => {
           setResumeTopics(data.resumeTopics);
         } else {
           setResumeTopics([
-            { id: 't1', title: `${user?.name || 'Mohammed Hassan Ahmed'}`, category: 'Profile', description: 'Computer Science Engineering | Web Development 9482364185 | College Email LinkedIn | GitHub', status: 'discussing' },
+            { id: 't1', title: `${candidateName}`, category: 'Profile', description: 'Computer Science Engineering | Web Development 9482364185 | College Email LinkedIn | GitHub', status: 'discussing' },
             { id: 't2', title: 'Undergraduate Engineering Profile', category: 'PROFILE', description: 'Computer Science Engineering student interested in software development and problem-solving. Familiar with HTML, CSS, React.js, Node.js, and Express.js, with basic knowledge of Java and Python. Developed academic web projects and used AI-assisted tools for coding support, debugging, and learning.', status: 'not_yet' },
             { id: 't3', title: 'Core Project Architecture & Design', category: 'PROJECT', description: 'Cloud Microservices Platform with Node.js, React, and MongoDB. High-scale REST APIs, ACID guarantees, and caching.', status: 'not_yet' },
             { id: 't4', title: 'Concurrency, Data Consistency & Scale', category: 'PROJECT', description: 'Handling distributed locking, ACID transaction guarantees, Redis cache invalidation, and race condition prevention.', status: 'not_yet' },
@@ -633,7 +623,7 @@ export const MockInterviewSessionPage: React.FC = () => {
 
         // Initialize First Interview Greeting from Emily Zhou
         const firstQ = data.questions?.[0];
-        const greeting = `Hi ${user?.name || 'Mohammed Hassan Ahmed'}, welcome to your Amazon SDE-1 interview. I'm Emily Zhou. I've reviewed your resume and project background. Let's start with a brief overview: tell me about yourself and your journey in software development.`;
+        const greeting = `Hi ${candidateName}, welcome to your Amazon SDE-1 interview. I'm Emily Zhou. I've reviewed your resume and project background. Let's start with a brief overview: tell me about yourself and your journey in software development.`;
 
         setTranscriptMessages([
           {
@@ -971,156 +961,17 @@ export const MockInterviewSessionPage: React.FC = () => {
             ----------------------------------------------------------------------- */}
         <section className="col-span-12 lg:col-span-3 bg-[#0e0f17] flex flex-col p-4 gap-4 h-full overflow-y-auto pb-24">
           
-          {/* 1. Emily Zhou Interviewer Video Tile - 1080p HD Live Video Conference Feed */}
-          <div className="rounded-2xl border border-slate-700/80 bg-[#12131f] overflow-hidden shadow-2xl shrink-0 ring-1 ring-slate-800">
-            <div className="relative aspect-video w-full bg-slate-950 flex items-center justify-center overflow-hidden group">
-              {/* Live Video Feed Image with subtle organic micro-drift */}
-              <div className="w-full h-full relative overflow-hidden bg-slate-950">
-                <img
-                  src={
-                    session?.interviewerAvatar ||
-                    'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?w=800&auto=format&fit=crop&q=80'
-                  }
-                  alt={session?.interviewerName || 'Emily Zhou'}
-                  className={`w-full h-full object-cover object-top select-none pointer-events-none transition-transform duration-700 ${
-                    conversationState === 'interviewer_speaking'
-                      ? 'animate-video-feed'
-                      : 'scale-100'
-                  }`}
-                />
-
-                {/* Natural Eyelid Blink Simulation Overlay (Smooth 160ms cycle every 4.2s) */}
-                {isEyelidBlinking && (
-                  <div
-                    className="absolute inset-0 pointer-events-none bg-slate-900/50 backdrop-blur-[1px] transition-opacity duration-150"
-                    style={{
-                      clipPath: 'ellipse(22% 8% at 50% 38%)',
-                    }}
-                  />
-                )}
-
-                {/* Organic Mouth / Speech Dynamics when Interviewer is speaking */}
-                {conversationState === 'interviewer_speaking' && (
-                  <div
-                    className="absolute pointer-events-none animate-mouth-viseme"
-                    style={{
-                      top: '55%',
-                      left: '46%',
-                      width: '9%',
-                      height: '4%',
-                      borderRadius: '9999px',
-                      background:
-                        'radial-gradient(circle, rgba(160, 60, 60, 0.45) 0%, rgba(120, 40, 40, 0.15) 70%, transparent 100%)',
-                      mixBlendMode: 'multiply',
-                    }}
-                  />
-                )}
-
-                {/* Authentic Video Feed Scanline Overlay */}
-                <div className="absolute inset-0 pointer-events-none bg-[linear-gradient(rgba(18,16,16,0)_50%,rgba(0,0,0,0.18)_50%)] bg-[length:100%_4px] opacity-25" />
-              </div>
-
-              {/* Top Bar inside Video Call: [● 1080p HD Live] and [18ms latency] */}
-              <div className="absolute top-2 left-2 right-2 flex items-center justify-between pointer-events-none z-10">
-                <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-black/75 backdrop-blur-md border border-slate-700/50 shadow-md">
-                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shadow-[0_0_8px_#34d399]" />
-                  <span className="text-[10px] font-bold text-white tracking-wider">
-                    1080p HD LIVE
-                  </span>
-                </div>
-
-                <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-black/70 backdrop-blur-md border border-slate-800 text-[9px] font-mono text-slate-300">
-                  <Radio className="w-2.5 h-2.5 text-emerald-400 animate-pulse" />
-                  <span>18ms</span>
-                </div>
-              </div>
-
-              {/* Active Green Wave Ring when Emily is speaking */}
-              {conversationState === 'interviewer_speaking' && (
-                <>
-                  <div className="absolute inset-0 border-2 border-emerald-400/90 rounded-2xl pointer-events-none shadow-[inset_0_0_20px_rgba(52,211,153,0.25)]" />
-                  
-                  {/* Equalizer Waveform Bars & Replay Action */}
-                  <div className="absolute bottom-2 left-2 right-2 flex items-center justify-between pointer-events-auto z-10">
-                    <div className="flex items-end gap-1 px-2.5 py-1 rounded-full bg-black/85 backdrop-blur-md border border-emerald-500/30">
-                      <span className="w-0.5 bg-emerald-400 rounded-full wave-bar-1 h-3" />
-                      <span className="w-0.5 bg-emerald-300 rounded-full wave-bar-2 h-4" />
-                      <span className="w-0.5 bg-emerald-400 rounded-full wave-bar-3 h-2.5" />
-                      <span className="w-0.5 bg-emerald-300 rounded-full wave-bar-4 h-3.5" />
-                      <span className="w-0.5 bg-emerald-400 rounded-full wave-bar-5 h-2" />
-                      <span className="text-[9px] font-bold text-emerald-300 ml-1 uppercase tracking-wide">
-                        Voice Active
-                      </span>
-                    </div>
-
-                    <button
-                      onClick={handleRepeatCurrentQuestion}
-                      className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-indigo-600/90 hover:bg-indigo-500 text-white text-[10px] font-bold shadow-lg transition-transform hover:scale-105 active:scale-95"
-                      title="Replay Emily's voice"
-                    >
-                      <RotateCcw className="w-3 h-3" />
-                      <span>Replay</span>
-                    </button>
-                  </div>
-                </>
-              )}
-
-              {/* Attentive Listening Badge when Candidate speaks */}
-              {conversationState === 'listening' && (
-                <div className="absolute bottom-2 left-2 right-2 flex items-center justify-between pointer-events-auto z-10">
-                  <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-black/80 backdrop-blur-md border border-slate-700/60 text-[10px] font-medium text-emerald-300">
-                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shadow-[0_0_6px_#34d399]" />
-                    <span>Attentive · Listening</span>
-                  </div>
-
-                  <button
-                    onClick={handleRepeatCurrentQuestion}
-                    className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-800/90 hover:bg-slate-700 text-slate-300 text-[10px] font-semibold border border-slate-700 transition-colors"
-                    title="Repeat Question"
-                  >
-                    <RotateCcw className="w-2.5 h-2.5" />
-                    <span>Repeat</span>
-                  </button>
-                </div>
-              )}
-
-              {/* Live Status Pill Top Right */}
-              {conversationState === 'evaluating' && (
-                <div className="absolute bottom-2 left-2 flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-black/80 backdrop-blur-md border border-indigo-500/40 text-[10px] font-semibold text-indigo-300 z-10">
-                  <span className="w-2 h-2 rounded-full bg-indigo-400 animate-ping" />
-                  <span>Evaluating Answer...</span>
-                </div>
-              )}
-            </div>
-
-            <div className="p-3 bg-[#11121d] flex items-center justify-between border-t border-slate-800">
-              <div>
-                <h3 className="font-bold text-white text-xs flex items-center gap-1.5">
-                  <span>{session?.interviewerName || 'Emily Zhou'}</span>
-                  <span className="text-[10px] font-normal text-slate-400">· Amazon</span>
-                </h3>
-                <p className="text-[11px] text-slate-400">
-                  {session?.interviewerRole || 'Senior Software Engineer'}
-                </p>
-              </div>
-
-              <span
-                className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
-                  conversationState === 'interviewer_speaking'
-                    ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
-                    : conversationState === 'listening'
-                    ? 'bg-teal-500/20 text-teal-300 border border-teal-500/30'
-                    : 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/30'
-                }`}
-              >
-                {conversationState === 'interviewer_speaking'
-                  ? 'Speaking'
-                  : conversationState === 'listening'
-                  ? 'Listening'
-                  : 'Analyzing'}
-              </span>
-            </div>
-          </div>
+          {/* 1. Emily Zhou Animated AI Video Avatar (Real-Time Lip Visemes, Eye-Blinks, Listening Nods) */}
+          <EmilyAIVideoAvatar
+            conversationState={conversationState}
+            avatarUrl={
+              session?.interviewerAvatar ||
+              'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?w=800&auto=format&fit=crop&q=80'
+            }
+            name={session?.interviewerName || 'Emily Zhou'}
+            role={session?.interviewerRole || 'Senior Software Engineer (Amazon)'}
+            onRepeatQuestion={handleRepeatCurrentQuestion}
+          />
 
           {/* 2. Candidate Live Video Tile with Green "M" or Webcam (Photo 4 Bottom Right) */}
           <div className="rounded-2xl border border-slate-800 bg-[#12131f] overflow-hidden shadow-lg shrink-0">
@@ -1135,7 +986,7 @@ export const MockInterviewSessionPage: React.FC = () => {
                 />
               ) : (
                 <div className="w-14 h-14 rounded-full bg-emerald-600 text-white font-bold text-2xl flex items-center justify-center shadow-md">
-                  {user?.name ? user.name[0].toUpperCase() : 'M'}
+                  {candidateName ? candidateName[0].toUpperCase() : 'M'}
                 </div>
               )}
 
@@ -1161,7 +1012,7 @@ export const MockInterviewSessionPage: React.FC = () => {
 
             <div className="p-2.5 bg-[#11121d] flex items-center justify-between border-t border-slate-800 text-xs">
               <span className="font-semibold text-slate-200">
-                {user?.name || 'Mohammed Hassan Ahmed'}
+                {candidateName}
               </span>
               <span className="text-[10px] text-emerald-400 font-mono">Candidate · Connected</span>
             </div>
@@ -1312,7 +1163,7 @@ export const MockInterviewSessionPage: React.FC = () => {
                   }`}
                 >
                   <div className="flex items-center justify-between text-[10px] text-slate-400 font-bold">
-                    <span>{msg.sender === 'interviewer' ? 'Emily Zhou' : `You (${user?.name || 'Mohammed Hassan Ahmed'})`}</span>
+                    <span>{msg.sender === 'interviewer' ? 'Emily Zhou' : `You (${candidateName})`}</span>
                     <span>{msg.time}</span>
                   </div>
                   <p className="leading-relaxed">{msg.text}</p>

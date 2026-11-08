@@ -94,11 +94,16 @@ export const autoSeedDatabase = async (): Promise<AutoSeedResult> => {
 
     // 4. Auto-Seed Demo Student Account (student@placement.edu / Placement2026!)
     const demoEmail = 'student@placement.edu';
+    
+    // Automatically update any legacy "Mohammed Farooq" records to "Mohammed Hassan Ahmed"
+    await User.updateMany({ name: 'Mohammed Farooq' }, { $set: { name: 'Mohammed Hassan Ahmed' } });
+    await Profile.updateMany({ name: 'Mohammed Farooq' }, { $set: { name: 'Mohammed Hassan Ahmed', githubProfile: 'https://github.com/codewithMHA', linkedinProfile: 'https://linkedin.com/in/mohammed-hassan-ahmed' } });
+
     let demoUser = await User.findOne({ email: demoEmail }).select('+password');
     if (!demoUser) {
       console.log(`[AutoSeed] Creating default Demo Student account (${demoEmail})...`);
       demoUser = await User.create({
-        name: 'Mohammed Farooq',
+        name: 'Mohammed Hassan Ahmed',
         email: demoEmail,
         password: 'Placement2026!',
         role: 'student',
@@ -106,7 +111,7 @@ export const autoSeedDatabase = async (): Promise<AutoSeedResult> => {
 
       const demoProfile = await Profile.create({
         user: demoUser._id,
-        name: 'Mohammed Farooq',
+        name: 'Mohammed Hassan Ahmed',
         email: demoEmail,
         college: 'National Institute of Technology',
         degree: 'B.Tech in Computer Science & Engineering',
@@ -115,8 +120,8 @@ export const autoSeedDatabase = async (): Promise<AutoSeedResult> => {
         experienceLevel: 'Intermediate',
         programmingLanguages: ['JavaScript', 'TypeScript', 'Python', 'C++'],
         skills: ['Data Structures', 'Algorithms', 'React', 'Node.js', 'MongoDB', 'System Design'],
-        githubProfile: 'https://github.com/mohammed-farooq',
-        linkedinProfile: 'https://linkedin.com/in/mohammed-farooq',
+        githubProfile: 'https://github.com/codewithMHA',
+        linkedinProfile: 'https://linkedin.com/in/mohammed-hassan-ahmed',
         preparationScore: 78,
         streakCount: 5,
         xpPoints: 1250,
@@ -165,12 +170,17 @@ export const autoSeedDatabase = async (): Promise<AutoSeedResult> => {
       didSeed = true;
       console.log(`[AutoSeed] ✅ Demo Student account created with complete profile and metrics.`);
     } else {
-      // Ensure profile exists for existing demo user
+      // Ensure existing demo user has correct name and profile
+      if (demoUser.name !== 'Mohammed Hassan Ahmed') {
+        demoUser.name = 'Mohammed Hassan Ahmed';
+        await demoUser.save();
+      }
+
       const existingProfile = await Profile.findOne({ user: demoUser._id });
       if (!existingProfile) {
         const demoProfile = await Profile.create({
           user: demoUser._id,
-          name: demoUser.name,
+          name: 'Mohammed Hassan Ahmed',
           email: demoUser.email,
           college: 'National Institute of Technology',
           degree: 'B.Tech in Computer Science & Engineering',
@@ -179,8 +189,8 @@ export const autoSeedDatabase = async (): Promise<AutoSeedResult> => {
           experienceLevel: 'Intermediate',
           programmingLanguages: ['JavaScript', 'TypeScript', 'Python', 'C++'],
           skills: ['Data Structures', 'Algorithms', 'React', 'Node.js', 'MongoDB', 'System Design'],
-          githubProfile: 'https://github.com/mohammed-farooq',
-          linkedinProfile: 'https://linkedin.com/in/mohammed-farooq',
+          githubProfile: 'https://github.com/codewithMHA',
+          linkedinProfile: 'https://linkedin.com/in/mohammed-hassan-ahmed',
           preparationScore: 78,
           streakCount: 5,
           xpPoints: 1250,
@@ -189,6 +199,15 @@ export const autoSeedDatabase = async (): Promise<AutoSeedResult> => {
         });
         demoUser.profile = demoProfile._id as any;
         await demoUser.save();
+      } else {
+        await Profile.updateOne(
+          { user: demoUser._id },
+          {
+            name: 'Mohammed Hassan Ahmed',
+            githubProfile: 'https://github.com/codewithMHA',
+            linkedinProfile: 'https://linkedin.com/in/mohammed-hassan-ahmed',
+          }
+        );
       }
     }
 
