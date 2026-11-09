@@ -970,7 +970,7 @@ export const MockInterviewSessionPage: React.FC = () => {
             conversationState={conversationState}
             avatarUrl={
               session?.interviewerAvatar ||
-              'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?w=800&auto=format&fit=crop&q=80'
+              'https://images.unsplash.com/photo-1580894732444-8ecded7900cd?w=800&auto=format&fit=crop&q=80'
             }
             name={session?.interviewerName || 'Emily Zhou'}
             role={session?.interviewerRole || 'Senior Software Engineer (Amazon)'}

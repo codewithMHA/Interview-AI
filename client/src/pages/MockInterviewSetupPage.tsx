@@ -64,7 +64,7 @@ const INTERVIEWER_PERSONAS: InterviewerPersona[] = [
     name: 'Emily Zhou',
     role: 'Senior Software Engineer',
     company: 'Amazon / AWS Cloud',
-    avatar: 'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?w=400&auto=format&fit=crop&q=80',
+    avatar: 'https://images.unsplash.com/photo-1580894732444-8ecded7900cd?w=400&auto=format&fit=crop&q=80',
     bio: 'Runs technical deep dives and system architecture rounds at Amazon. Probes scalability, concurrency, and real-world trade-offs.',
     style: 'Direct, analytical, focused on production edge cases & ACID guarantees.',
   },
