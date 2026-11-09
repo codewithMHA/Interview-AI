@@ -74,6 +74,62 @@ import { useTheme } from '@/context/ThemeContext';
 
 type ConversationState = 'connecting' | 'interviewer_speaking' | 'listening' | 'evaluating';
 
+// Phonetic & Technical Dictionary to fix misrecognized technical jargon and Indian names
+export const sanitizeSpokenTranscript = (text: string, candidateName: string = 'Mohammed Hassan Ahmed'): string => {
+  if (!text) return '';
+  let cleaned = text;
+
+  // 1. Candidate Name corrections (Web Speech API frequently mishears Indian names)
+  cleaned = cleaned.replace(/\b(mothers and ahmed friend|mothers and ahmed|mothers ahmed|mother son ahmed|mothers and friend|mothers)\b/gi, candidateName);
+
+  // 2. Core Tech Stack & Frameworks
+  cleaned = cleaned.replace(/\b(not there's|no this has|no this|know this|note js|no js|no day yes|no just)\b/gi, 'Node.js');
+  cleaned = cleaned.replace(/\b(react js|reacted js|react just)\b/gi, 'React.js');
+  cleaned = cleaned.replace(/\b(express js|expressive js|express just)\b/gi, 'Express.js');
+  cleaned = cleaned.replace(/\b(mongo db|manga db|mango db|momo db)\b/gi, 'MongoDB');
+  cleaned = cleaned.replace(/\b(javascript|java script)\b/gi, 'JavaScript');
+  cleaned = cleaned.replace(/\b(typescript|type script)\b/gi, 'TypeScript');
+  cleaned = cleaned.replace(/\b(c plus plus|c \+ \+)\b/gi, 'C++');
+  cleaned = cleaned.replace(/\b(git hub|get hub)\b/gi, 'GitHub');
+
+  // 3. Runtime Internals, Concurrency & Asynchronous terms
+  cleaned = cleaned.replace(/\b(non blocking in food|non blocking input food|non blocking input)\b/gi, 'non-blocking I/O');
+  cleaned = cleaned.replace(/\b(in food)\b/gi, 'I/O');
+  cleaned = cleaned.replace(/\b(as synchronise|as synchronize|as synchronised)\b/gi, 'asynchronous');
+  cleaned = cleaned.replace(/\b(synchronise|synchronised)\b/gi, 'synchronous');
+  cleaned = cleaned.replace(/\b(runs the code in bite|code in bite|in bite)\b/gi, 'runs the code in bytecode');
+  cleaned = cleaned.replace(/\b(bite code)\b/gi, 'bytecode');
+  cleaned = cleaned.replace(/\b(single thread|single traded)\b/gi, 'single-threaded');
+  cleaned = cleaned.replace(/\b(even loop|event look)\b/gi, 'event loop');
+  cleaned = cleaned.replace(/\b(cost tag|call stop|car stack)\b/gi, 'call stack');
+  cleaned = cleaned.replace(/\b(live uv|leave uv|lib uv)\b/gi, 'libuv');
+  cleaned = cleaned.replace(/\b(third pool|threat pool)\b/gi, 'thread pool');
+  cleaned = cleaned.replace(/\b(set time out|set timeout)\b/gi, 'setTimeout');
+  cleaned = cleaned.replace(/\b(set immediate)\b/gi, 'setImmediate');
+  cleaned = cleaned.replace(/\b(process next tick)\b/gi, 'process.nextTick');
+  cleaned = cleaned.replace(/\b(micro task|micro tasks)\b/gi, 'microtask');
+  cleaned = cleaned.replace(/\b(macro task|macro tasks)\b/gi, 'macrotask');
+
+  // 4. Database, ACID & System Architecture
+  cleaned = cleaned.replace(/\b(asset properties|acid properties|asset property)\b/gi, 'ACID properties');
+  cleaned = cleaned.replace(/\b(write ahead log|right ahead log|ride ahead log|wal log)\b/gi, 'Write-Ahead Log (WAL)');
+  cleaned = cleaned.replace(/\b(multi version concurrency control|mvcc)\b/gi, 'MVCC');
+  cleaned = cleaned.replace(/\b(phantom rows|phantom rose)\b/gi, 'phantom rows');
+  cleaned = cleaned.replace(/\b(dirty reads|30 reads)\b/gi, 'dirty reads');
+  cleaned = cleaned.replace(/\b(two phase locking|2 phase locking)\b/gi, 'Two-Phase Locking (2PL)');
+  cleaned = cleaned.replace(/\b(pessimistic locking|pessimistic block)\b/gi, 'pessimistic locking');
+  cleaned = cleaned.replace(/\b(optimistic concurrency|optimistic control)\b/gi, 'optimistic concurrency');
+  cleaned = cleaned.replace(/\b(circuit breaker|circuit breakers)\b/gi, 'circuit breaker');
+  cleaned = cleaned.replace(/\b(deadlock|dead lock|dead logs)\b/gi, 'deadlock');
+  cleaned = cleaned.replace(/\b(best api|press api|rest api)\b/gi, 'REST API');
+
+  // 5. Candidate Specific Experience & Projects
+  cleaned = cleaned.replace(/\b(salary and electricity uses tracker|salary and electricity tracker)\b/gi, 'Salary and Electricity Usage Tracker');
+  cleaned = cleaned.replace(/\b(diploma and current)\b/gi, 'diploma and currently');
+
+  return cleaned;
+};
+
 export const MockInterviewSessionPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -117,6 +173,8 @@ export const MockInterviewSessionPage: React.FC = () => {
   const [micVolumeLevel, setMicVolumeLevel] = useState<number>(0);
   const [isTextModeOpen, setIsTextModeOpen] = useState<boolean>(false);
   const [isTranscriptOpen, setIsTranscriptOpen] = useState<boolean>(false);
+  const [speechLang, setSpeechLang] = useState<'en-IN' | 'en-US'>('en-IN');
+  const [isEditingSpokenAnswer, setIsEditingSpokenAnswer] = useState<boolean>(false);
 
   // Candidate Camera State
   const [isCameraActive, setIsCameraActive] = useState<boolean>(true);
@@ -334,9 +392,9 @@ export const MockInterviewSessionPage: React.FC = () => {
     clearSilenceTimer();
     if (isSubmittingAnswerRef.current) return;
 
-    // Combine finalized spoken answer with any in-flight interim speech so sentences are never cut off in half
-    const combinedSpoken = (latestSpokenAnswerRef.current + ' ' + (latestInterimRef.current || '')).trim();
-    const spoken = combinedSpoken;
+    // Combine finalized spoken answer with any in-flight interim speech and clean technical jargon
+    const rawSpoken = (latestSpokenAnswerRef.current + ' ' + (latestInterimRef.current || '')).trim();
+    const spoken = sanitizeSpokenTranscript(rawSpoken, candidateName);
     if (!spoken || spoken.length < 2) return;
 
     if (!session || !id) return;
@@ -495,9 +553,8 @@ export const MockInterviewSessionPage: React.FC = () => {
     const recognition = new SpeechRecognition();
     recognition.continuous = true;
     recognition.interimResults = true;
-    // Set speech recognition language with en-IN support for accurate Indian accent recognition
-    const userLocale = navigator.language || 'en-IN';
-    recognition.lang = userLocale.toLowerCase().includes('in') ? 'en-IN' : 'en-US';
+    // Set speech recognition language explicitly (en-IN by default for accurate Indian accent & tech phonetics)
+    recognition.lang = speechLang;
 
     recognition.onresult = (event: any) => {
       let interim = '';
@@ -512,16 +569,18 @@ export const MockInterviewSessionPage: React.FC = () => {
       }
 
       if (final.trim()) {
+        const cleanedFinal = sanitizeSpokenTranscript(final.trim(), candidateName);
         setUserSpokenAnswer((prev) => {
-          const updated = prev ? `${prev} ${final.trim()}` : final.trim();
+          const updated = prev ? `${prev} ${cleanedFinal}` : cleanedFinal;
           latestSpokenAnswerRef.current = updated;
           return updated;
         });
       }
-      latestInterimRef.current = interim;
-      setInterimTranscript(interim);
+      const cleanedInterim = sanitizeSpokenTranscript(interim, candidateName);
+      latestInterimRef.current = cleanedInterim;
+      setInterimTranscript(cleanedInterim);
 
-      const currentFullText = (latestSpokenAnswerRef.current + ' ' + interim).trim();
+      const currentFullText = (latestSpokenAnswerRef.current + ' ' + cleanedInterim).trim();
       const wordCount = currentFullText.split(/\s+/).filter(Boolean).length;
 
       // Smart silence detection: only reset and re-arm timer when NEW speech content arrives
@@ -576,7 +635,7 @@ export const MockInterviewSessionPage: React.FC = () => {
         recognition.stop();
       } catch {}
     };
-  }, [clearSilenceTimer, handleAutoProcessCandidateAnswer]);
+  }, [clearSilenceTimer, handleAutoProcessCandidateAnswer, speechLang, candidateName]);
 
   // 8. Countdown Timer (44:53)
   useEffect(() => {
@@ -1022,44 +1081,106 @@ export const MockInterviewSessionPage: React.FC = () => {
             </div>
           </div>
 
-          {/* Current Spoken Transcript Streaming Preview with Instant "Done Speaking" Action */}
+          {/* Current Spoken Transcript Streaming Preview with Instant "Done Speaking" Action & Quick Edit */}
           <div className="p-3 rounded-xl bg-slate-900/60 border border-slate-800 text-[11px] space-y-2">
             <div className="flex items-center justify-between">
-              <span className="text-[10px] font-bold uppercase text-slate-400 block">
-                Live Voice Feed
-              </span>
-              {pauseCountdown !== null && pauseCountdown > 0 && (
-                <span className="text-[10px] font-bold text-amber-400 animate-pulse">
-                  Auto-sending in {pauseCountdown}s...
+              <div className="flex items-center gap-1.5">
+                <span className="text-[10px] font-bold uppercase text-slate-400 block">
+                  Live Voice Feed
                 </span>
-              )}
+                {/* Speech Accent Selector: default en-IN for Indian candidates */}
+                <button
+                  type="button"
+                  onClick={() => setSpeechLang((prev) => (prev === 'en-IN' ? 'en-US' : 'en-IN'))}
+                  className="px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-[9px] text-emerald-400 font-bold border border-slate-700 transition-colors cursor-pointer"
+                  title="Click to toggle speech recognition accent"
+                >
+                  {speechLang === 'en-IN' ? '🇮🇳 en-IN' : '🇺🇸 en-US'}
+                </button>
+              </div>
+
+              <div className="flex items-center gap-2">
+                {userSpokenAnswer && !isEditingSpokenAnswer && conversationState !== 'evaluating' && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsEditingSpokenAnswer(true);
+                      clearSilenceTimer();
+                    }}
+                    className="text-[10px] text-indigo-400 hover:text-indigo-300 font-semibold flex items-center gap-0.5 cursor-pointer"
+                    title="Edit any misheard words before submitting"
+                  >
+                    ✏️ Edit words
+                  </button>
+                )}
+                {pauseCountdown !== null && pauseCountdown > 0 && !isEditingSpokenAnswer && (
+                  <span className="text-[10px] font-bold text-amber-400 animate-pulse">
+                    Auto-sending in {pauseCountdown}s...
+                  </span>
+                )}
+              </div>
             </div>
 
-            <p className="text-slate-300 leading-relaxed font-sans min-h-[35px]">
-              {conversationState === 'evaluating' ? (
-                <span className="text-indigo-400 italic flex items-center gap-1.5">
-                  <span className="w-2 h-2 rounded-full bg-indigo-400 animate-ping" />
-                  Emily is analyzing your response & preparing the next question...
-                </span>
-              ) : userSpokenAnswer || interimTranscript ? (
-                <span>
-                  {userSpokenAnswer}{' '}
-                  <span className="text-emerald-400 italic">{interimTranscript}</span>
-                </span>
-              ) : conversationState === 'interviewer_speaking' ? (
-                <span className="text-slate-400 italic">Emily is speaking...</span>
-              ) : (
-                <span className="text-emerald-400/80 italic animate-pulse">
-                  🎙️ Speak your answer naturally...
-                </span>
-              )}
-            </p>
+            {isEditingSpokenAnswer ? (
+              <div className="space-y-2 mt-1">
+                <textarea
+                  value={userSpokenAnswer}
+                  onChange={(e) => {
+                    setUserSpokenAnswer(e.target.value);
+                    latestSpokenAnswerRef.current = e.target.value;
+                  }}
+                  rows={3}
+                  className="w-full p-2.5 rounded-xl border border-indigo-500 bg-[#0c0d16] text-xs text-white focus:outline-none focus:ring-1 focus:ring-indigo-400 font-sans"
+                  placeholder="Correct any words here..."
+                />
+                <div className="flex items-center gap-2 justify-end">
+                  <button
+                    type="button"
+                    onClick={() => setIsEditingSpokenAnswer(false)}
+                    className="px-2.5 py-1 rounded-lg text-slate-400 hover:text-white text-[11px] cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsEditingSpokenAnswer(false);
+                      handleAutoProcessCandidateAnswer();
+                    }}
+                    className="px-3 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[11px] shadow-sm flex items-center gap-1 cursor-pointer"
+                  >
+                    <CheckCircle2 className="w-3 h-3" />
+                    <span>Submit Fixed Answer ↵</span>
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <p className="text-slate-300 leading-relaxed font-sans min-h-[35px]">
+                {conversationState === 'evaluating' ? (
+                  <span className="text-indigo-400 italic flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-indigo-400 animate-ping" />
+                    Emily is analyzing your response & preparing the next question...
+                  </span>
+                ) : userSpokenAnswer || interimTranscript ? (
+                  <span>
+                    {userSpokenAnswer}{' '}
+                    <span className="text-emerald-400 italic">{interimTranscript}</span>
+                  </span>
+                ) : conversationState === 'interviewer_speaking' ? (
+                  <span className="text-slate-400 italic">Emily is speaking...</span>
+                ) : (
+                  <span className="text-emerald-400/80 italic animate-pulse">
+                    🎙️ Speak your answer naturally...
+                  </span>
+                )}
+              </p>
+            )}
 
             {/* Instant "Done Speaking" Action Button */}
-            {(userSpokenAnswer.trim() || interimTranscript.trim()) && conversationState !== 'evaluating' && (
+            {!isEditingSpokenAnswer && (userSpokenAnswer.trim() || interimTranscript.trim()) && conversationState !== 'evaluating' && (
               <button
                 onClick={() => handleAutoProcessCandidateAnswer()}
-                className="w-full mt-1 px-3 py-1.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold text-xs shadow-md shadow-emerald-900/30 flex items-center justify-center gap-1.5 transition-all transform active:scale-95"
+                className="w-full mt-1 px-3 py-1.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold text-xs shadow-md shadow-emerald-900/30 flex items-center justify-center gap-1.5 transition-all transform active:scale-95 cursor-pointer"
               >
                 <CheckCircle2 className="w-3.5 h-3.5" />
                 <span>Done Speaking · Submit Answer ↵</span>

@@ -181,7 +181,7 @@ export class AIService {
     for (const model of candidateModels) {
       try {
         const timeoutPromise = new Promise<null>((_, reject) =>
-          setTimeout(() => reject(new Error('AI_TIMEOUT_EXCEEDED')), 6500)
+          setTimeout(() => reject(new Error('AI_TIMEOUT_EXCEEDED')), 3000)
         );
 
         const generatePromise = client.models.generateContent({

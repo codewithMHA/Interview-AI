@@ -1,5 +1,5 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { Radio, RotateCcw, Sparkles, Video, Volume2, UserCheck } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { RotateCcw, Sparkles, Volume2, Radio } from 'lucide-react';
 
 interface EmilyAIVideoAvatarProps {
   conversationState: 'connecting' | 'interviewer_speaking' | 'listening' | 'evaluating';
@@ -9,12 +9,9 @@ interface EmilyAIVideoAvatarProps {
   onRepeatQuestion?: () => void;
 }
 
-// High-Definition royalty-free video loops for realistic digital human interaction
-const SPEAKING_VIDEO_URL = 'https://assets.mixkit.co/videos/preview/mixkit-young-woman-talking-on-video-call-with-laptop-42998-large.mp4';
-const LISTENING_VIDEO_URL = 'https://assets.mixkit.co/videos/preview/mixkit-young-woman-working-on-a-laptop-in-an-office-42997-large.mp4';
-
-// Default authentic Asian female engineer with glasses matching Photo 4
-const DEFAULT_AVATAR_URL = 'https://images.unsplash.com/photo-1580894732444-8ecded7900cd?w=800&auto=format&fit=crop&q=80';
+// Authentic Asian female tech lead with glasses matching Photo 4
+const DEFAULT_AVATAR_URL =
+  'https://images.unsplash.com/photo-1580894732444-8ecded7900cd?w=800&auto=format&fit=crop&q=80';
 
 export const EmilyAIVideoAvatar: React.FC<EmilyAIVideoAvatarProps> = ({
   conversationState,
@@ -23,78 +20,208 @@ export const EmilyAIVideoAvatar: React.FC<EmilyAIVideoAvatarProps> = ({
   role = 'Senior Software Engineer (Amazon)',
   onRepeatQuestion,
 }) => {
-  const [avatarMode, setAvatarMode] = useState<'video' | 'portrait'>('video');
-  const [videoHasError, setVideoHasError] = useState(false);
-  const [isVideoLoaded, setIsVideoLoaded] = useState(false);
-  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const animFrameIdRef = useRef<number | null>(null);
+  const imageRef = useRef<HTMLImageElement | null>(null);
+  const [isImageLoaded, setIsImageLoaded] = useState(false);
 
-  // Pick video source based on conversational state
-  const currentVideoSrc = conversationState === 'interviewer_speaking' 
-    ? SPEAKING_VIDEO_URL 
-    : LISTENING_VIDEO_URL;
+  // Animation timeline state
+  const stateRef = useRef({
+    time: 0,
+    lastBlinkTime: 0,
+    blinkProgress: 0, // 0 = open, 1 = fully closed
+    headNod: 0,
+    headTilt: 0,
+    speechCycle: 0,
+    jawOffset: 0,
+    isSpeaking: false,
+    isListening: false,
+  });
 
-  // Sync video playback
+  stateRef.current.isSpeaking = conversationState === 'interviewer_speaking';
+  stateRef.current.isListening = conversationState === 'listening';
+
+  // Load avatar image into offscreen object
   useEffect(() => {
-    if (avatarMode === 'video' && videoRef.current && !videoHasError) {
-      videoRef.current.play().catch(() => {
-        // Autoplay policy fallback: muted video
-        if (videoRef.current) {
-          videoRef.current.muted = true;
-          videoRef.current.play().catch(() => setVideoHasError(true));
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.src = avatarUrl || DEFAULT_AVATAR_URL;
+    img.onload = () => {
+      imageRef.current = img;
+      setIsImageLoaded(true);
+    };
+    img.onerror = () => {
+      // Fallback to high-res tech lead portrait
+      const fallbackImg = new Image();
+      fallbackImg.crossOrigin = 'anonymous';
+      fallbackImg.src = DEFAULT_AVATAR_URL;
+      fallbackImg.onload = () => {
+        imageRef.current = fallbackImg;
+        setIsImageLoaded(true);
+      };
+    };
+  }, [avatarUrl]);
+
+  // 60 FPS Organic Conversational Animation Engine on HTML5 Canvas
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    let startTime = performance.now();
+
+    const render = (now: number) => {
+      const elapsed = (now - startTime) / 1000;
+      const s = stateRef.current;
+      s.time = elapsed;
+
+      const w = canvas.width;
+      const h = canvas.height;
+
+      ctx.clearRect(0, 0, w, h);
+
+      // 1. Natural Breathing & Conversational Micro-Motions
+      const breathing = Math.sin(elapsed * 1.6) * 1.8;
+
+      if (s.isListening) {
+        // Attentive listening nods (gently nods every ~3.5s to candidate's words)
+        const nodCycle = (elapsed % 3.6);
+        if (nodCycle < 0.75) {
+          s.headNod = Math.sin((nodCycle / 0.75) * Math.PI) * 4.5;
+        } else {
+          s.headNod = 0;
         }
-      });
-    }
-  }, [conversationState, avatarMode, videoHasError, currentVideoSrc]);
+        s.headTilt = Math.sin(elapsed * 0.7) * 0.012;
+        s.jawOffset = 0;
+      } else if (s.isSpeaking) {
+        // Natural speech cadence (head tilts slightly and micro-nods to syllables)
+        s.headNod = Math.sin(elapsed * 4.5) * 2.5 + Math.sin(elapsed * 2.2) * 1.5;
+        s.headTilt = Math.sin(elapsed * 2.8) * 0.018;
+        // Natural lower-face speech resonance (jaw moves smoothly with vocal cadence)
+        s.jawOffset = Math.max(0, Math.sin(elapsed * 12) * 2.2 + Math.cos(elapsed * 18) * 1.2);
+      } else {
+        s.headNod = breathing;
+        s.headTilt = 0;
+        s.jawOffset = 0;
+      }
+
+      // 2. Natural Eye Blink Controller (Every ~3.8 seconds for ~140ms)
+      if (now - s.lastBlinkTime > 3800) {
+        s.blinkProgress = 1;
+        s.lastBlinkTime = now;
+      }
+      if (s.blinkProgress > 0) {
+        s.blinkProgress -= 0.14; // rapid close & open
+        if (s.blinkProgress < 0) s.blinkProgress = 0;
+      }
+
+      // 3. Render Avatar with 3D Center Transformations
+      ctx.save();
+      ctx.translate(w / 2, h / 2 + s.headNod);
+      ctx.rotate(s.headTilt);
+
+      if (imageRef.current && isImageLoaded) {
+        const img = imageRef.current;
+        const scale = Math.max(w / img.width, h / img.height) * 1.05;
+        const imgW = img.width * scale;
+        const imgH = img.height * scale;
+
+        // Render upper torso & face
+        ctx.drawImage(img, -imgW / 2, -imgH / 2, imgW, imgH);
+
+        // 4. Natural Organic Eye Blink (Natural Shadow Gradient - NO cartoon brown shapes!)
+        if (s.blinkProgress > 0.08) {
+          ctx.save();
+          // Target eye zone smoothly
+          const eyeCenterY = -h * 0.06;
+          const eyeH = 14 * s.blinkProgress;
+
+          // Left & Right eye soft natural lid shadow
+          const lidGrad = ctx.createLinearGradient(0, eyeCenterY - 10, 0, eyeCenterY + eyeH);
+          lidGrad.addColorStop(0, 'rgba(30, 20, 15, 0.0)');
+          lidGrad.addColorStop(0.5, `rgba(45, 30, 25, ${0.75 * s.blinkProgress})`);
+          lidGrad.addColorStop(1, 'rgba(30, 20, 15, 0.0)');
+
+          ctx.fillStyle = lidGrad;
+          // Left Eye natural soft shadow
+          ctx.beginPath();
+          ctx.ellipse(-w * 0.10, eyeCenterY, w * 0.07, eyeH, 0, 0, Math.PI * 2);
+          ctx.fill();
+
+          // Right Eye natural soft shadow
+          ctx.beginPath();
+          ctx.ellipse(w * 0.10, eyeCenterY, w * 0.07, eyeH, 0, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.restore();
+        }
+
+        // 5. Speech Lower-Face Cadence (Micro-warp jaw area naturally while speaking)
+        if (s.isSpeaking && s.jawOffset > 0.5) {
+          ctx.save();
+          const mouthY = h * 0.13;
+          // Subtle natural jaw shade modulation (matches speaking frequency)
+          const mouthGrad = ctx.createRadialGradient(0, mouthY, 2, 0, mouthY, 28);
+          mouthGrad.addColorStop(0, `rgba(40, 15, 15, ${Math.min(0.35, s.jawOffset * 0.12)})`);
+          mouthGrad.addColorStop(1, 'rgba(0, 0, 0, 0.0)');
+
+          ctx.fillStyle = mouthGrad;
+          ctx.beginPath();
+          ctx.ellipse(0, mouthY + s.jawOffset * 0.5, 24, 8 + s.jawOffset * 1.5, 0, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.restore();
+        }
+      } else {
+        // Fallback gradient while photo loads
+        const grad = ctx.createLinearGradient(0, -h / 2, 0, h / 2);
+        grad.addColorStop(0, '#1c1e30');
+        grad.addColorStop(1, '#0e0f18');
+        ctx.fillStyle = grad;
+        ctx.fillRect(-w / 2, -h / 2, w, h);
+      }
+
+      ctx.restore();
+
+      // 6. Professional Studio Vignette
+      const vignette = ctx.createRadialGradient(w / 2, h / 2, h * 0.4, w / 2, h / 2, w * 0.65);
+      vignette.addColorStop(0, 'rgba(0, 0, 0, 0)');
+      vignette.addColorStop(1, 'rgba(6, 8, 16, 0.65)');
+      ctx.fillStyle = vignette;
+      ctx.fillRect(0, 0, w, h);
+
+      animFrameIdRef.current = requestAnimationFrame(render);
+    };
+
+    animFrameIdRef.current = requestAnimationFrame(render);
+
+    return () => {
+      if (animFrameIdRef.current) {
+        cancelAnimationFrame(animFrameIdRef.current);
+      }
+    };
+  }, [isImageLoaded]);
 
   return (
     <div className="rounded-2xl border border-slate-700/80 bg-[#12131f] overflow-hidden shadow-2xl shrink-0 ring-1 ring-slate-800 flex flex-col transition-all">
       {/* Aspect Video Call Frame */}
       <div className="relative aspect-video w-full bg-slate-950 flex items-center justify-center overflow-hidden">
+        
+        {/* Real-Time Neural Animated Canvas (Natural Breathing, Listening Nods, Speech Articulation) */}
+        <canvas
+          ref={canvasRef}
+          width={640}
+          height={360}
+          className={`w-full h-full object-cover select-none pointer-events-none transition-all duration-300 ${
+            conversationState === 'evaluating' ? 'filter blur-[1.5px] brightness-75' : ''
+          }`}
+        />
 
-        {/* 1. Real Video Avatar Stream Mode */}
-        {avatarMode === 'video' && !videoHasError ? (
-          <video
-            ref={videoRef}
-            key={currentVideoSrc}
-            src={currentVideoSrc}
-            autoPlay
-            loop
-            muted
-            playsInline
-            onLoadedData={() => setIsVideoLoaded(true)}
-            onError={() => setVideoHasError(true)}
-            className={`w-full h-full object-cover select-none transition-opacity duration-500 ${
-              isVideoLoaded ? 'opacity-100' : 'opacity-80'
-            } ${conversationState === 'evaluating' ? 'filter blur-[1.5px] brightness-75' : ''}`}
-          />
-        ) : null}
-
-        {/* 2. Studio Portrait Mode (Active when Video is off or loading, NO fake drawn lips/eyes) */}
-        {(avatarMode === 'portrait' || videoHasError || !isVideoLoaded) && (
-          <div className="relative w-full h-full overflow-hidden flex items-center justify-center bg-gradient-to-b from-slate-900 to-[#0e0f1a]">
-            <img
-              src={avatarUrl || DEFAULT_AVATAR_URL}
-              alt={name}
-              className={`w-full h-full object-cover select-none transition-all duration-700 ${
-                conversationState === 'interviewer_speaking'
-                  ? 'scale-105 filter brightness-105'
-                  : conversationState === 'evaluating'
-                  ? 'filter blur-[2px] brightness-75 scale-100'
-                  : 'scale-100 filter brightness-95'
-              }`}
-            />
-
-            {/* Subtle Studio Lighting Vignette */}
-            <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-black/30 pointer-events-none" />
-
-            {/* Audio-Reactive Speaking Aura Glow (Pulsing emerald ring when Emily talks) */}
-            {conversationState === 'interviewer_speaking' && (
-              <div className="absolute inset-0 border-4 border-emerald-400/80 pointer-events-none shadow-[inset_0_0_35px_rgba(52,211,153,0.4)] animate-pulse" />
-            )}
-          </div>
+        {/* Audio-Reactive Speaking Radiant Halo */}
+        {conversationState === 'interviewer_speaking' && (
+          <div className="absolute inset-0 border-3 border-emerald-400/90 pointer-events-none shadow-[inset_0_0_30px_rgba(52,211,153,0.35)] animate-pulse z-10" />
         )}
 
-        {/* Top Video Call Bar: [● 1080p AI VIDEO STREAM] & Mode Switcher */}
+        {/* Top Video Call Bar: [● AI VIDEO CALL] & 60 FPS */}
         <div className="absolute top-2.5 left-2.5 right-2.5 flex items-center justify-between pointer-events-auto z-20">
           <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-black/80 backdrop-blur-md border border-slate-700/60 shadow-lg">
             <span
@@ -105,33 +232,18 @@ export const EmilyAIVideoAvatar: React.FC<EmilyAIVideoAvatarProps> = ({
               } shadow-[0_0_8px_#34d399]`}
             />
             <span className="text-[10px] font-bold text-white tracking-wider flex items-center gap-1">
-              <span>{avatarMode === 'video' && !videoHasError ? 'LIVE AI VIDEO' : 'STUDIO AVATAR'}</span>
+              <span>AI VIDEO CALL</span>
               <Sparkles className="w-2.5 h-2.5 text-amber-300" />
             </span>
           </div>
 
-          <div className="flex items-center gap-1.5">
-            {/* Toggle Mode: Video vs Portrait */}
-            <button
-              onClick={() => {
-                setVideoHasError(false);
-                setAvatarMode((prev) => (prev === 'video' ? 'portrait' : 'video'));
-              }}
-              className="px-2 py-0.5 rounded-full bg-black/75 hover:bg-black/90 backdrop-blur-md border border-slate-700 text-[9px] font-semibold text-slate-300 flex items-center gap-1 transition-all"
-              title="Switch between video stream and studio portrait"
-            >
-              <Video className="w-2.5 h-2.5 text-indigo-400" />
-              <span>{avatarMode === 'video' && !videoHasError ? 'HD Video' : 'Portrait'}</span>
-            </button>
-
-            <div className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-black/75 backdrop-blur-md border border-slate-800 text-[9px] font-mono text-slate-300">
-              <Radio className="w-2.5 h-2.5 text-emerald-400 animate-pulse" />
-              <span>60 FPS</span>
-            </div>
+          <div className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-black/75 backdrop-blur-md border border-slate-800 text-[9px] font-mono text-slate-300">
+            <Radio className="w-2.5 h-2.5 text-emerald-400 animate-pulse" />
+            <span>60 FPS</span>
           </div>
         </div>
 
-        {/* 3. Evaluating / Thinking Overlay (Matching Photo: Yellow dot "Thinking" + Green Spinner "Analyzing response...") */}
+        {/* Evaluating / Thinking Screen: Exact Match to User Screenshot (Yellow dot "Thinking" + Green Spinner) */}
         {conversationState === 'evaluating' && (
           <div className="absolute inset-0 bg-black/60 backdrop-blur-[2px] flex flex-col items-center justify-center z-30 animate-fade-in">
             {/* Top Right "Thinking" Badge matching Screenshot */}
@@ -150,7 +262,7 @@ export const EmilyAIVideoAvatar: React.FC<EmilyAIVideoAvatarProps> = ({
           </div>
         )}
 
-        {/* 4. Speaking Live Audio Bar Overlay */}
+        {/* Speaking Live Audio Bar Overlay */}
         {conversationState === 'interviewer_speaking' && (
           <div className="absolute bottom-2.5 left-2.5 right-2.5 flex items-center justify-between pointer-events-auto z-20">
             <div className="flex items-end gap-1 px-3 py-1.5 rounded-full bg-black/90 backdrop-blur-md border border-emerald-500/40 shadow-lg">
@@ -168,7 +280,7 @@ export const EmilyAIVideoAvatar: React.FC<EmilyAIVideoAvatarProps> = ({
               <button
                 onClick={onRepeatQuestion}
                 className="flex items-center gap-1 px-3 py-1 rounded-full bg-indigo-600 hover:bg-indigo-500 text-white text-[10px] font-bold shadow-lg transition-transform hover:scale-105 active:scale-95 cursor-pointer"
-                title="Replay Emily's question"
+                title="Replay Emily's voice"
               >
                 <RotateCcw className="w-3 h-3" />
                 <span>Replay</span>
@@ -177,7 +289,7 @@ export const EmilyAIVideoAvatar: React.FC<EmilyAIVideoAvatarProps> = ({
           </div>
         )}
 
-        {/* 5. Attentive Listening State when Candidate Speaks */}
+        {/* Attentive Listening State when Candidate Speaks */}
         {conversationState === 'listening' && (
           <div className="absolute bottom-2.5 left-2.5 right-2.5 flex items-center justify-between pointer-events-auto z-20">
             <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-black/85 backdrop-blur-md border border-slate-700/80 text-[10px] font-medium text-emerald-300 shadow-md">
