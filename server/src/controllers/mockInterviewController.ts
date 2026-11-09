@@ -341,10 +341,11 @@ export const submitAnswer = async (
     const evaluation =
       evalResult.status === 'fulfilled'
         ? evalResult.value
-        : (AIService as any).fallbackAnswerEvaluation(
+        : AIService.fallbackAnswerEvaluation(
             targetQuestion.question,
             combinedResponse,
-            targetQuestion.category
+            targetQuestion.category,
+            interview.role
           );
 
     targetQuestion.studentAnswer = cleanAnswer;
@@ -503,7 +504,7 @@ export const completeInterview = async (
     if (Array.isArray(interview.questions)) {
       for (const q of interview.questions) {
         if (!q.feedback) {
-          const benchmarkEval = (AIService as any).fallbackAnswerEvaluation(q.question, '', q.category);
+          const benchmarkEval = AIService.fallbackAnswerEvaluation(q.question, '', q.category, interview.role);
           q.feedback = {
             overallScore: 0,
             scores: {
@@ -514,11 +515,21 @@ export const completeInterview = async (
               completeness: 0,
               communication: 0,
             },
+            rubricBreakdown: {
+              technicalCorrectness: 0,
+              problemSolving: 0,
+              communication: 0,
+              relevance: 0,
+              completeness: 0,
+              scoringFormula: 'Score = (Correctness * 0.30) + (ProblemSolving * 0.25) + (Communication * 0.20) + (Relevance * 0.15) + (Completeness * 0.10)',
+            },
+            roleLevel: interview.role?.toLowerCase().includes('senior') ? 'Senior Engineer' : interview.role?.toLowerCase().includes('sde-2') ? 'SDE-2' : 'SDE-1',
             whatWentWell: ['Question not attempted in this interview session.'],
             whatWasMissed: [
               'Candidate exited or completed session before answering this question.',
               ...(benchmarkEval.whatWasMissed || []).slice(0, 2),
             ],
+            missingConcepts: benchmarkEval.missingConcepts || [],
             howToImprove: benchmarkEval.howToImprove,
             modelAnswer: benchmarkEval.modelAnswer,
             recommendedTopics: benchmarkEval.recommendedTopics,
@@ -829,7 +840,7 @@ function generateComprehensiveReport(interview: any): any {
       weakAnswers.push(`Question: "${q.question}" - Skipped or unattempted in session.`);
       const benchmarkEval = q.feedback?.modelAnswer
         ? q.feedback
-        : (AIService as any).fallbackAnswerEvaluation(q.question, '', q.category);
+        : AIService.fallbackAnswerEvaluation(q.question, '', q.category, interview.role);
       answerImprovements.push({
         questionId: q.id,
         question: q.question,
@@ -862,11 +873,11 @@ function generateComprehensiveReport(interview: any): any {
   };
 
   const prepLevel =
-    overallScore >= 80 && answeredCount >= 4
-      ? 'Placement Ready'
-      : overallScore >= 60 && answeredCount >= 3
-      ? 'Intermediate'
-      : 'Needs Further Practice';
+    overallScore >= 78 && answeredCount >= 3
+      ? 'Ready for SDE Technical Loops (Tier-1 Standard)'
+      : overallScore >= 55 && answeredCount >= 2
+      ? 'Recommended for Targeted Practice (Moderate Readiness)'
+      : 'Foundational Revision Recommended (Needs Practice)';
 
   const defaultTopics = [
     'Concurrency & Distributed Locks (ACID / Redis / DB Locks)',

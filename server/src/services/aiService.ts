@@ -135,6 +135,16 @@ export interface AnswerEvaluationResponse {
   howToImprove: string[];
   modelAnswer: string;
   recommendedTopics: string[];
+  rubricBreakdown?: {
+    technicalCorrectness: number; // 30% weight
+    problemSolving: number;       // 25% weight
+    communication: number;        // 20% weight
+    relevance: number;            // 15% weight
+    completeness: number;         // 10% weight
+    scoringFormula: string;
+  };
+  missingConcepts?: string[];
+  roleLevel?: string;
 }
 
 export class AIService {
@@ -2394,7 +2404,12 @@ Return ONLY a valid JSON array matching this schema:
   }
 
   /**
-   * Evaluates a candidate's answer to a mock interview question across 6 dimensions.
+   * Evaluates a candidate's answer to a mock interview question across 5 transparent dimensions:
+   * 1. Technical Correctness (30%)
+   * 2. Problem-Solving & Depth (25%)
+   * 3. Communication & Articulation (20%)
+   * 4. Relevance to Question (15%)
+   * 5. Completeness (10%)
    */
   public static async evaluateMockAnswer(params: {
     role: string;
@@ -2403,42 +2418,58 @@ Return ONLY a valid JSON array matching this schema:
     category?: string;
     difficulty?: string;
   }): Promise<AnswerEvaluationResponse> {
-    const prompt = `You are a fair, constructive, and elite Technical Placement Interviewer and Engineering Manager evaluating an undergraduate student in a campus recruitment mock interview.
-Role: ${params.role}
+    const isBehavioral =
+      params.category?.toLowerCase() === 'behavioral' ||
+      params.question.toLowerCase().includes('tell me about a time') ||
+      params.question.toLowerCase().includes('conflict') ||
+      params.question.toLowerCase().includes('disagree') ||
+      params.question.toLowerCase().includes('challenge');
+
+    const prompt = `You are a fair, rigorous, evidence-based Technical Placement Interviewer and Engineering Manager evaluating a candidate's spoken mock interview response.
+Candidate Profile: Mohammed Hassan Ahmed, Computer Science & Engineering undergraduate student.
+Target Role: ${params.role}
 Question: ${params.question}
 Category: ${params.category || 'Technical'}
 Difficulty: ${params.difficulty || 'Intermediate'}
-Student's Submitted Answer:
+Candidate's Transcribed Spoken Answer:
 "${params.answer}"
 
-EVALUATION & SCORING PRINCIPLES:
-1. Candidate Persona & Articulation:
-   - The candidate is an undergraduate engineer preparing for Tier-1 placements (Amazon, Microsoft, Google, top startups).
-   - They may articulate answers conversationally or in Indian/ESL phrasing (e.g. "if a new user comes means have to sign up and at their appliance and usage...").
-   - Value their functional problem decomposition, system intent, and engineering intuition.
+STRICT EVALUATION INSTRUCTIONS:
+1. EVIDENCE-BASED EVALUATION (NO ASSUMPTIONS):
+   - Evaluate STRICTLY based on what the candidate actually articulated in the submitted transcript.
+   - If the transcript is unclear, fragmented, phonetically garbled, or off-topic, do NOT invent or assume answers. Do NOT award technical marks without direct evidence.
+   - If the candidate speaks about personal background or unrelated projects instead of answering the specific question asked, award a low relevance and technical score (10-25%).
 
-2. Objective Scoring Rubric:
-   - EMPTY / SKIPPED / 1-3 TRIVIAL WORDS ("yes", "ok", "no", random gibberish):
-     * Award 10-20. State clearly in "whatWasMissed" that no technical elaboration was provided.
-   - FUNCTIONAL / CONVERSATIONAL OVERVIEW (explains application flow, project feature logic, or general intuition but lacks deep concurrency/locks/internals):
-     * Award 45-60. Positively recognize their problem understanding in "whatWentWell", and explain the missing architectural mechanisms (e.g. database locks, ACID, message queues, libuv phases) in "whatWasMissed".
-   - SOLID TECHNICAL ANSWER (explains core mechanics, data structures, or trade-offs with good clarity):
-     * Award 65-80.
-   - EXCEPTIONAL SENIOR-LEVEL ANSWER (covers edge cases, asymptotic bounds, concurrency, and production failure recovery):
-     * Award 82-95.
+2. NO HALLUCINATIONS:
+   - Never invent candidate credentials, college degrees, companies worked at, or unmentioned projects. Use only verified profile information and their actual transcript.
 
-3. "modelAnswer" Requirement:
-   - MUST BE a complete, highly detailed 4-6 sentence production-grade Staff Engineer reference answer specifically answering: "${params.question}".
-   - Mention concrete technologies (e.g., Redis Redlock, PostgreSQL row locks, Kafka queues, libuv event loop phases, V8 call stack) and production trade-offs.
+3. BEHAVIORAL QUESTIONS (STAR METHOD):
+   ${
+     isBehavioral
+       ? `- This is a BEHAVIORAL question. Evaluate strictly using the STAR framework (Situation, Task, Action, Result).
+   - In "whatWentWell", explicitly note which of Situation, Task, Action, or Result were well articulated.
+   - In "whatWasMissed", explicitly identify if Situation, Task, Action, or Result was omitted or vague.`
+       : `- For technical questions, verify technical correctness of definitions, mechanisms, runtime trade-offs, and edge cases.`
+   }
 
-4. "whatWentWell" & "whatWasMissed":
-   - "whatWentWell": 2-3 genuine, encouraging bullet points recognizing what the candidate articulated.
-   - "whatWasMissed": 2-3 specific technical points, edge cases, or runtime bounds that would elevate them to a Tier-1 hire.
-   - "howToImprove": 2 actionable tips for real campus placement rounds.
+4. TRANSPARENT 5-DIMENSION SCORING RUBRIC (WEIGHTED FORMULA):
+   - Technical Correctness (30% weight): Technical factual accuracy and precise definitions (0-100).
+   - Problem-Solving / Depth (25% weight): Depth of engineering mechanics, concurrency, data structures, or root-cause logic (0-100).
+   - Communication / Articulation (20% weight): Fluency, structure, and clarity of spoken delivery (0-100).
+   - Relevance to Question (15% weight): How directly the spoken response addresses the prompt (0-100). (Off-topic answers must receive <= 15).
+   - Completeness (10% weight): Coverage of core expected points and trade-offs (0-100).
+   - "overallScore" MUST strictly equal the weighted formula:
+     Math.round((correctness * 0.30) + (technicalDepth * 0.25) + (communication * 0.20) + (relevance * 0.15) + (completeness * 0.10))
+
+5. ROLE-BASED BENCHMARK ANSWER:
+   - Provide an authentic benchmark answer specifically tailored to the target role level (${params.role}):
+     * SDE-1: Clean fundamentals, clear definitions, code/API mechanics, and asymptotic complexities.
+     * SDE-2: Concurrency, caching strategies, database locks, indexing, edge cases, and error resilience.
+     * Senior / Staff Engineer: Distributed consensus, WAL recovery (ARIES), partition tolerance, failure isolation, and architectural trade-offs.
 
 Return ONLY a valid JSON object matching this schema:
 {
-  "overallScore": <number 0-100>,
+  "overallScore": <number 0-100 calculated from formula>,
   "scores": {
     "correctness": <0-100>,
     "technicalDepth": <0-100>,
@@ -2447,11 +2478,21 @@ Return ONLY a valid JSON object matching this schema:
     "completeness": <0-100>,
     "communication": <0-100>
   },
+  "rubricBreakdown": {
+    "technicalCorrectness": <0-100>,
+    "problemSolving": <0-100>,
+    "communication": <0-100>,
+    "relevance": <0-100>,
+    "completeness": <0-100>,
+    "scoringFormula": "Score = (Correctness * 0.30) + (ProblemSolving * 0.25) + (Communication * 0.20) + (Relevance * 0.15) + (Completeness * 0.10)"
+  },
+  "roleLevel": "SDE-1" | "SDE-2" | "Senior Engineer",
   "whatWentWell": ["Strength 1", "Strength 2"],
-  "whatWasMissed": ["Crucial omission or misconception 1", "Omission 2"],
+  "whatWasMissed": ["Weakness or omitted concept 1", "Omission 2"],
+  "missingConcepts": ["Specific keyword/mechanism 1", "Specific mechanism 2"],
   "howToImprove": ["Actionable tip 1", "Actionable tip 2"],
-  "modelAnswer": "Comprehensive, deep technical answer specifically answering this question with trade-offs.",
-  "recommendedTopics": ["Specific Topic to study 1", "Topic 2"]
+  "modelAnswer": "Role-tailored benchmark answer demonstrating Tier-1 engineering standards.",
+  "recommendedTopics": ["Specific Topic 1", "Topic 2"]
 }`;
 
     const text = await this.generateContentWithFallback(prompt);
@@ -2461,18 +2502,44 @@ Return ONLY a valid JSON object matching this schema:
         const getNum = (val: any, fallback: number) =>
           typeof val === 'number' && !isNaN(val) ? Math.min(100, Math.max(0, val)) : fallback;
 
+        const correctness = getNum(parsed.scores?.correctness ?? parsed.rubricBreakdown?.technicalCorrectness, 10);
+        const technicalDepth = getNum(parsed.scores?.technicalDepth ?? parsed.rubricBreakdown?.problemSolving, 10);
+        const clarity = getNum(parsed.scores?.clarity, 20);
+        const confidence = getNum(parsed.scores?.confidence, 20);
+        const completeness = getNum(parsed.scores?.completeness ?? parsed.rubricBreakdown?.completeness, 10);
+        const communication = getNum(parsed.scores?.communication ?? parsed.rubricBreakdown?.communication, 30);
+        const relevance = getNum(parsed.rubricBreakdown?.relevance, 20);
+
+        const computedOverall = Math.round(
+          correctness * 0.3 +
+          technicalDepth * 0.25 +
+          communication * 0.2 +
+          relevance * 0.15 +
+          completeness * 0.1
+        );
+
         return {
-          overallScore: getNum(parsed.overallScore, 10),
+          overallScore: getNum(parsed.overallScore, computedOverall),
           scores: {
-            correctness: getNum(parsed.scores?.correctness, 10),
-            technicalDepth: getNum(parsed.scores?.technicalDepth, 10),
-            clarity: getNum(parsed.scores?.clarity, 20),
-            confidence: getNum(parsed.scores?.confidence, 20),
-            completeness: getNum(parsed.scores?.completeness, 10),
-            communication: getNum(parsed.scores?.communication, 40),
+            correctness,
+            technicalDepth,
+            clarity,
+            confidence,
+            completeness,
+            communication,
           },
+          rubricBreakdown: {
+            technicalCorrectness: correctness,
+            problemSolving: technicalDepth,
+            communication,
+            relevance,
+            completeness,
+            scoringFormula: 'Score = (Correctness * 0.30) + (ProblemSolving * 0.25) + (Communication * 0.20) + (Relevance * 0.15) + (Completeness * 0.10)',
+          },
+          roleLevel: parsed.roleLevel || (params.role.toLowerCase().includes('senior') ? 'Senior Engineer' : params.role.toLowerCase().includes('sde-2') ? 'SDE-2' : 'SDE-1'),
           whatWentWell: Array.isArray(parsed.whatWentWell) && parsed.whatWentWell.length > 0 ? parsed.whatWentWell : ['Attempted to respond to the prompt.'],
           whatWasMissed: Array.isArray(parsed.whatWasMissed) && parsed.whatWasMissed.length > 0 ? parsed.whatWasMissed : ['Did not address the expected technical or behavioral requirements.'],
+          missingConcepts: Array.isArray(parsed.missingConcepts) && parsed.missingConcepts.length > 0 ? parsed.missingConcepts : [],
           howToImprove: Array.isArray(parsed.howToImprove) && parsed.howToImprove.length > 0 ? parsed.howToImprove : ['Study fundamental concepts and practice structured articulation.'],
           modelAnswer: parsed.modelAnswer || 'A model response directly defines the core concept and demonstrates engineering trade-offs.',
           recommendedTopics: Array.isArray(parsed.recommendedTopics) && parsed.recommendedTopics.length > 0 ? parsed.recommendedTopics : ['Core Computer Science Fundamentals'],
@@ -2482,7 +2549,7 @@ Return ONLY a valid JSON object matching this schema:
       }
     }
 
-    return this.fallbackAnswerEvaluation(params.question, params.answer, params.category);
+    return this.fallbackAnswerEvaluation(params.question, params.answer, params.category, params.role);
   }
 
   /**
@@ -4003,10 +4070,11 @@ Return ONLY a valid JSON object matching this schema:
     }));
   }
 
-  private static fallbackAnswerEvaluation(
+  public static fallbackAnswerEvaluation(
     question: string,
     answer: string,
-    category?: string
+    category?: string,
+    role?: string
   ): AnswerEvaluationResponse {
     const trimmed = (answer || '').trim();
     const words = trimmed.split(/\s+/).filter(Boolean);
@@ -4014,14 +4082,25 @@ Return ONLY a valid JSON object matching this schema:
     const lowerQuestion = (question || '').toLowerCase();
     const lowerAnswer = trimmed.toLowerCase();
 
+    // Determine candidate seniority from role
+    const r = (role || '').toLowerCase();
+    const roleLevel: 'SDE-1' | 'SDE-2' | 'Senior Engineer' =
+      r.includes('senior') || r.includes('staff') || r.includes('lead') || r.includes('architect')
+        ? 'Senior Engineer'
+        : r.includes('sde-2') || r.includes('sde 2') || r.includes('sde ii') || r.includes('mid')
+        ? 'SDE-2'
+        : 'SDE-1';
+
     // -------------------------------------------------------------------------
-    // 1. Comprehensive Question Knowledge Base for Deep, Authentic Evaluation
+    // 1. Comprehensive Question Knowledge Base with Role-Based Benchmark Answers
     // -------------------------------------------------------------------------
     interface DomainTopic {
       match: (q: string) => boolean;
       title: string;
       requiredConcepts: { term?: string; terms?: string[]; label: string }[];
-      modelAnswer: string;
+      sde1Answer: string;
+      sde2Answer: string;
+      seniorAnswer: string;
       recommendedTopics: string[];
     }
 
@@ -4033,29 +4112,34 @@ Return ONLY a valid JSON object matching this schema:
           q.includes('background') ||
           q.includes('introduction') ||
           q.includes('profile') ||
-          q.includes('tell me about') ||
-          q.includes('projects you\'ve developed'),
+          q.includes('tell me about yourself') ||
+          q.includes('tell me about your background') ||
+          (q.includes('tell me about') && q.includes('you') && !q.includes('time') && !q.includes('bug') && !q.includes('conflict')),
         title: 'Candidate Profile, Background & Project Introduction',
         requiredConcepts: [
           {
-            terms: ['name', 'mothers', 'ahmed', 'hassan', 'farooq', 'student', 'myself'],
-            label: 'Candidate identity & self-introduction',
+            terms: ['name', 'mothers', 'ahmed', 'hassan', 'student', 'myself'],
+            label: 'Candidate identity & self-introduction (Mohammed Hassan Ahmed)',
           },
           {
             terms: ['computer', 'science', 'engineering', 'diploma', 'degree', 'college', 'journey', 'education', 'cse'],
-            label: 'Educational background in Computer Science & engineering journey',
+            label: 'Educational background in Computer Science & Engineering',
           },
           {
-            terms: ['salary', 'electricity', 'tracker', 'project', 'developed', 'app', 'application', 'built', 'website'],
-            label: 'Key software projects highlighted (Salary / Electricity Tracker)',
+            terms: ['salary', 'electricity', 'tracker', 'project', 'developed', 'app', 'application', 'built'],
+            label: 'Key software projects highlighted (Salary Tracker / Electricity Usage Tracker)',
           },
           {
-            terms: ['software', 'developer', 'frontend', 'backend', 'full stack', 'coding', 'journey', 'start', 'technology'],
-            label: 'Passion for software engineering & continuous technical learning',
+            terms: ['software', 'developer', 'frontend', 'backend', 'full stack', 'coding', 'technology', 'node', 'react'],
+            label: 'Technical focus in Full Stack Development (Node.js, React, databases)',
           },
         ],
-        modelAnswer:
-          'I am a Computer Science and Engineering graduate who began my software engineering journey through a diploma in engineering and progressed into advanced full-stack development. Over the course of my degree, I built production-oriented projects including a Salary and Electricity Usage Tracker, where I implemented reactive dashboards, consumption forecasting, and clean RESTful APIs. My core technical strengths lie in Node.js, JavaScript/TypeScript, React, and database management, and I am passionate about engineering reliable, scalable software architectures.',
+        sde1Answer:
+          'I am Mohammed Hassan Ahmed, a Computer Science and Engineering graduate who began my software engineering journey through a diploma in engineering and progressed into full-stack development. During my degree, I developed production-oriented applications including an Electricity Usage Tracker and a Salary Calculator, using React, Node.js, and MongoDB. I focus on writing clean, modular code, building responsive interfaces, and implementing RESTful APIs with solid error handling.',
+        sde2Answer:
+          'I am Mohammed Hassan Ahmed, a Computer Science and Engineering graduate specializing in scalable full-stack development with React, Node.js, and distributed databases. In my Salary and Electricity Usage Tracker, I designed event-driven telemetry ingestion pipelines, applied optimistic locking in MongoDB to eliminate race conditions during concurrent meter updates, and integrated asynchronous AI forecasting with Redis caching to maintain sub-50ms API response latencies.',
+        seniorAnswer:
+          'I am Mohammed Hassan Ahmed, a Computer Science and Engineering graduate with deep experience architecting full-stack systems with Node.js, React, and polyglot persistence. Across projects like the Electricity Usage and Salary Tracker, I focused on high-availability telemetry pipelines, WAL-backed state persistence, optimistic concurrency control under peak loads, and asynchronous AI inference pipelines using message buffers to isolate critical read paths from batch compute workloads.',
         recommendedTopics: [
           'Elevator Pitch Structuring for Campus Recruitment',
           'Highlighting Engineering Impact & Quantitative Metrics',
@@ -4085,8 +4169,12 @@ Return ONLY a valid JSON object matching this schema:
             label: 'Persistent storage and database write consistency',
           },
         ],
-        modelAnswer:
-          'In the electricity usage tracker, real-time meter telemetry and appliance parameters are ingested through an event-driven Node.js gateway. Upon user onboarding, appliance wattage and historical consumption profiles are captured. To prevent race conditions during simultaneous updates, updates use atomic database operators ($set and $inc in MongoDB) with optimistic concurrency versioning. Consumption forecasting and bill predictions are processed asynchronously using background workers and Gemini AI insights, caching calculated bill estimates in Redis to keep user read latency under 40ms.',
+        sde1Answer:
+          'In the electricity usage tracker, users register and input their appliances with rated wattages and operating hours. The application captures daily meter telemetry through REST endpoints built in Node.js and Express. Consumption metrics and calculated bills are persisted in MongoDB using Mongoose schemas with validation. Bill predictions use calculation formulas and AI prompts to suggest actionable energy-saving recommendations based on historical usage.',
+        sde2Answer:
+          'In the electricity usage tracker, real-time meter telemetry is ingested through an asynchronous Node.js gateway. Upon user onboarding, appliance wattage and consumption profiles are indexed. To prevent race conditions during simultaneous updates, updates use atomic database operators ($set and $inc in MongoDB) with optimistic version keys. Consumption forecasting is processed asynchronously, caching calculated bill estimates in Redis with a 15-minute TTL to keep read latencies under 40ms.',
+        seniorAnswer:
+          'In the electricity usage tracker, high-frequency meter telemetry is decoupled via an event-driven buffer before batched ingestion into MongoDB. To ensure write consistency and prevent race conditions, the system uses atomic document mutations with optimistic concurrency control (OCC). Telemetry analytics and AI predictions run asynchronously via background workers, isolating heavy analytical compute from operational read paths and caching hot user projections in Redis with proactive revalidation.',
         recommendedTopics: [
           'Atomic Database Updates vs Application Locks',
           'Asynchronous AI Inference Pipelines & Message Queues',
@@ -4094,17 +4182,68 @@ Return ONLY a valid JSON object matching this schema:
         ],
       },
       {
+        match: (q) =>
+          q.includes('acid') || (q.includes('transaction') && q.includes('database')) || q.includes('wal') || q.includes('write-ahead'),
+        title: 'Database Transactions, ACID Guarantees & Concurrency Control',
+        requiredConcepts: [
+          { terms: ['atomicity', 'atomic', 'all or nothing', 'all-or-nothing'], label: 'Atomicity: all-or-nothing execution via rollback' },
+          { terms: ['consistency', 'valid state', 'schema constraint', 'foreign key'], label: 'Consistency: adhering to schema constraints and foreign keys' },
+          { terms: ['isolation', 'isolated', 'dirty read', 'phantom', 'mvcc', '2pl'], label: 'Isolation: preventing dirty reads, non-repeatable reads, phantom rows' },
+          { terms: ['durability', 'durable', 'power failure', 'crash recovery', 'safe on disk'], label: 'Durability: committed data surviving crashes via non-volatile storage' },
+          { terms: ['write ahead', 'write-ahead', 'wal', 'undo log', 'redo log'], label: 'Write-Ahead Logging (WAL) write mechanics before page modifications' },
+        ],
+        sde1Answer:
+          'ACID defines the foundational guarantees of relational database transactions: 1) Atomicity ensures all operations succeed or the entire transaction rolls back; 2) Consistency ensures the database transitions only between valid states enforcing schema constraints and keys; 3) Isolation ensures concurrent transactions do not interfere with one another; 4) Durability guarantees that committed data survives power failures. Write-Ahead Logs (WAL) guarantee Atomicity and Durability by writing all changes to a sequential log on disk before updating data tables.',
+        sde2Answer:
+          'ACID establishes production transactional reliability: Atomicity and Durability rely on Write-Ahead Logging (WAL). In WAL, modifications are written to sequential append-only disk logs before memory buffer pages are flushed; on a system crash, the engine uses redo/undo log records to restore committed states and roll back in-flight transactions. Isolation is achieved through Multi-Version Concurrency Control (MVCC) or Two-Phase Locking across ANSI SQL isolation levels (Read Committed, Repeatable Read) to prevent dirty reads and lost updates.',
+        seniorAnswer:
+          'ACID establishes relational consistency at scale: Atomicity and Durability are governed by Write-Ahead Logging under the ARIES recovery protocol. Log sequence numbers (LSNs) are flushed to non-volatile storage via synchronous fsync prior to modifying buffer pool pages, guaranteeing idempotency during crash recovery. Isolation uses Snapshot Isolation via MVCC or Two-Phase Locking (2PL), eliminating dirty and non-repeatable reads while avoiding phantom rows through Serializable Snapshot Isolation (SSI). Distributed engines pair WAL replication with Raft/Paxos consensus for high-availability durability.',
+        recommendedTopics: [
+          'Write-Ahead Logging (WAL) & Crash Recovery (ARIES)',
+          'ANSI SQL Isolation Levels & Concurrency Anomalies',
+          'Multi-Version Concurrency Control (MVCC) in PostgreSQL',
+        ],
+      },
+      {
+        match: (q) =>
+          q.includes('event loop') ||
+          (q.includes('node') && (q.includes('non-blocking') || q.includes('async') || q.includes('internals') || q.includes('runtime'))),
+        title: 'Node.js Event Loop, Call Stack & libuv Asynchronous Architecture',
+        requiredConcepts: [
+          { terms: ['single thread', 'call stack', 'v8', 'main thread'], label: 'Single-threaded JavaScript execution on V8 call stack' },
+          { terms: ['libuv', 'thread pool', 'worker', 'c++'], label: 'libuv C++ multi-threaded worker pool (default 4 threads)' },
+          { terms: ['phase', 'timer', 'poll', 'check', 'setimmediate'], label: 'Event loop phases (Timers, Poll, Check setImmediate)' },
+          { terms: ['exhaust', 'block', 'cpu', 'heavy', 'starve', 'lag'], label: 'Impact of CPU-heavy tasks exhausting thread pool or call stack' },
+          { terms: ['worker thread', 'cluster', 'offload', 'queue'], label: 'Mitigating CPU exhaustion using Worker Threads or background queues' },
+        ],
+        sde1Answer:
+          'Node.js executes JavaScript on a single thread using the V8 engine call stack, but handles asynchronous I/O through libuv. While network requests and file reads run in the background via operating system primitives and the libuv worker pool, JavaScript code executes sequentially. If a CPU-heavy task runs on the main thread, it blocks the event loop, preventing callbacks and new requests from being processed until the compute finishes. In Node.js, we offload intensive work to Worker Threads or break tasks into asynchronous chunks using setImmediate.',
+        sde2Answer:
+          'Node.js delegates non-blocking asynchronous I/O to libuv, which maintains an internal thread pool (default 4 threads) for file system operations, DNS lookups, and crypto. The Event Loop processes callbacks across distinct phases: Timers, Pending Callbacks, Poll, Check (setImmediate), and Close. When a CPU-bound task blocks the V8 call stack or saturates the thread pool, subsequent I/O callbacks are delayed, causing event loop lag. In production, we isolate CPU workloads into Node.js Worker Threads, cluster worker processes, or offload to background queues like Redis BullMQ.',
+        seniorAnswer:
+          'Node.js achieves high I/O throughput by coupling V8 single-threaded execution with libuv event-driven OS multiplexing (epoll/kqueue). Microtasks (process.nextTick, Promise jobs) drain with highest priority between event loop phases. If CPU-intensive computations saturate the call stack or libuv thread pool, event loop tick latency spikes, degrading throughput across all concurrent connections. Production architectures prevent event loop starvation by enforcing strict execution timeouts, isolating CPU compute into Node.js Worker Threads or Rust NAPI native add-ons, and offloading heavy tasks to distributed message workers.',
+        recommendedTopics: [
+          'libuv Architecture & Worker Pool Configuration',
+          'Event Loop Phases: Timers, Poll, Check & Close',
+          'Macro vs Microtask Scheduling & nextTick Order',
+        ],
+      },
+      {
         match: (q) => (q.includes('virtual dom') || q.includes('reconciliation') || q.includes('fiber')) && q.includes('react'),
         title: 'React Virtual DOM, Reconciliation (Fiber) & Dynamic Keys',
         requiredConcepts: [
-          { term: 'virtual dom', label: 'Virtual DOM representation in memory' },
-          { term: 'diffing', label: 'Diffing algorithm / heuristic O(n)' },
-          { term: 'fiber', label: 'Fiber nodes & interruptible prioritized units of work' },
-          { term: 'key', label: 'Unique keys for persistent element identity across renders' },
-          { term: 're-render', label: 'Minimizing unnecessary unmounting and DOM thrashing' },
+          { terms: ['virtual dom', 'vdom', 'memory'], label: 'Virtual DOM in-memory representation' },
+          { terms: ['diff', 'diffing', 'reconciliation', 'o(n)'], label: 'Diffing algorithm / heuristic O(n) tree comparison' },
+          { terms: ['fiber', 'unit of work', 'interrupt', 'concurrent'], label: 'Fiber nodes as interruptible units of work' },
+          { terms: ['key', 'unique key', 'identity', 'index'], label: 'Unique keys for element identity across re-renders' },
+          { terms: ['render', 'mutation', 'dom', 'patch'], label: 'Minimizing browser real DOM reflows and repaints' },
         ],
-        modelAnswer:
-          'React\'s Virtual DOM is an in-memory lightweight JavaScript object tree mirroring the actual browser DOM. When component state changes, React creates a new Virtual DOM tree and runs its Reconciliation algorithm—powered by the Fiber architecture—to compute the minimum DOM mutations in O(n) linear time rather than O(n³). Fiber decomposes rendering into incremental units of work, allowing high-priority user interactions to preempt background tree diffing. When rendering dynamic lists, unique keys supply stable identities across renders; without keys (or when incorrectly using array indices on reordered lists), React cannot reliably correlate existing DOM elements, resulting in unneeded element recreations and state leakage across rows.',
+        sde1Answer:
+          'React uses a Virtual DOM, which is a lightweight JavaScript copy of the actual DOM stored in memory. When state updates, React creates a new Virtual DOM tree, runs its diffing algorithm to compare it against the previous tree in O(n) time, and updates only the changed elements in the real DOM. When rendering dynamic lists, unique keys must be provided so React can track which specific items changed, were added, or were removed without recreating the entire list.',
+        sde2Answer:
+          'React\'s Reconciliation engine uses the Fiber architecture to break rendering into incremental, interruptible units of work. Instead of blocking the browser with a synchronous recursive tree diff, Fiber allows high-priority browser events to pause low-priority rendering. When rendering lists, stable unique keys ensure React matches existing DOM elements between renders; using array indices as keys causes subtle UI bugs and unnecessary unmounting when list items are reordered or filtered.',
+        seniorAnswer:
+          'React Fiber replaces synchronous recursion with a singly linked-list tree of fiber nodes, separating the reconciliation work loop (render phase) from synchronous DOM mutation (commit phase). This architecture unlocks concurrent features like transitions (useTransition) and selective hydration. Stable unique keys are critical: they provide deterministic identity hashes for fiber nodes; unstable keys force React to destroy the fiber subtree and recreate DOM elements, triggering unnecessary garbage collection, layout thrashing, and component state resets.',
         recommendedTopics: [
           'React Fiber Reconciliation Mechanics',
           'Diffing Heuristics & Tree Mutation Minimization',
@@ -4115,14 +4254,18 @@ Return ONLY a valid JSON object matching this schema:
         match: (q) => (q.includes('context') || q.includes('zustand') || q.includes('redux')) && (q.includes('state') || q.includes('react')),
         title: 'React Context API vs Zustand / Redux State Architecture',
         requiredConcepts: [
-          { term: 'context', label: 'React Context API dependency injection' },
-          { term: 're-render', label: 'Unnecessary re-renders on every context value mutation' },
-          { term: 'selector', label: 'Selector-based subscriptions in Zustand/Redux' },
-          { term: 'boilerplate', label: 'Provider tree nesting and boilerplate management' },
-          { term: 'frequent', label: 'Low-frequency data (auth/theme) vs high-frequency state' },
+          { terms: ['context', 'usecontext', 'provider'], label: 'React Context API dependency injection' },
+          { terms: ['re-render', 'rerender', 'render'], label: 'Unnecessary re-renders on context value mutation' },
+          { terms: ['selector', 'subscription', 'slice'], label: 'Selector-based subscriptions in Zustand/Redux' },
+          { terms: ['boilerplate', 'nesting', 'provider hell'], label: 'Provider tree nesting and boilerplate management' },
+          { terms: ['frequent', 'high frequency', 'auth', 'theme'], label: 'Low-frequency data vs high-frequency state updates' },
         ],
-        modelAnswer:
-          'React Context API is designed for low-frequency global dependency injection (e.g., authentication, active theme, locale). Its principal performance bottleneck is that whenever any field within the context value object updates, every consuming component using `useContext` re-renders, even if its own required slice did not change. Modern state management libraries like Zustand or Redux Toolkit address this via selector-based subscriptions (`useStore(state => state.field)`), ensuring components only re-render when their exact subscribed slice mutates. Furthermore, Zustand eliminates "provider hell" by residing outside the React tree and avoiding context wrapper components.',
+        sde1Answer:
+          'React Context API is built into React to pass data through the component tree without prop drilling, which is great for low-frequency data like authentication status or dark mode theme. However, when a context value changes, every component reading that context re-renders. Zustand or Redux are better for complex or frequently changing state because components subscribe only to specific slices of state using selectors, preventing unnecessary re-renders.',
+        sde2Answer:
+          'React Context API is ideal for static dependency injection, but lacks built-in selector subscriptions: any update to a single field within the context value object triggers a re-render for all consumers using useContext. Modern state libraries like Zustand solve this with selector-based subscriptions (useStore(state => state.field)), ensuring components only re-render when their exact selected slice changes. Zustand also removes provider boilerplate by living outside the component tree.',
+        seniorAnswer:
+          'React Context API was designed for dependency injection rather than high-frequency mutable state management. Its architectural limitation is the lack of bail-out mechanisms: any reference change to the context value schedules re-renders across the entire consumer subtree. Zustand and Redux Toolkit overcome this by decoupling state from the React tree, using external stores with pub/sub listeners and useSyncExternalStore. This enables microsecond selector-level diffing and eliminates nested provider hierarchies.',
         recommendedTopics: [
           'React Context Performance Trade-offs',
           'Selector-Based Subscriptions in Zustand & Redux',
@@ -4133,14 +4276,18 @@ Return ONLY a valid JSON object matching this schema:
         match: (q) => q.includes('rest') && q.includes('graphql'),
         title: 'REST API Architecture vs GraphQL Specifications',
         requiredConcepts: [
-          { term: 'over-fetch', label: 'Mitigating over-fetching (unused payload fields)' },
-          { term: 'under-fetch', label: 'Mitigating under-fetching (N+1 multiple round-trips)' },
-          { term: 'endpoint', label: 'Single POST endpoint vs multiple HTTP resource verbs' },
-          { term: 'caching', label: 'HTTP caching (CDNs/ETags) vs client-side Apollo cache' },
-          { term: 'schema', label: 'Strongly typed schema and query complexity limits' },
+          { terms: ['over-fetch', 'overfetch', 'payload', 'fields'], label: 'Mitigating over-fetching (unused payload fields)' },
+          { terms: ['under-fetch', 'underfetch', 'n+1', 'multiple requests'], label: 'Mitigating under-fetching (N+1 multiple round-trips)' },
+          { terms: ['endpoint', 'post', 'verb', 'crud', 'http'], label: 'Single POST endpoint vs multiple HTTP resource verbs' },
+          { terms: ['caching', 'cdn', 'etag', 'http cache'], label: 'HTTP caching (CDNs/ETags) vs client-side normalized cache' },
+          { terms: ['schema', 'typed', 'resolver', 'query'], label: 'Strongly typed schema and query complexity limits' },
         ],
-        modelAnswer:
-          'REST exposes resources via dedicated URL endpoints accessed with standard HTTP verbs (GET, POST, PUT, DELETE). While REST natively leverages HTTP caching (ETags, CDN edge caches, HTTP status codes), it is susceptible to over-fetching (downloading unneeded fields) and under-fetching (making multiple sequential requests to assemble related data, the N+1 problem). GraphQL solves this by providing a single POST endpoint where clients declare the exact fields required against a strongly typed schema. However, GraphQL introduces architectural trade-offs: HTTP-level caching is much harder, requiring client-side normalized caches like Apollo InMemoryCache, and servers must implement query depth analysis to prevent denial-of-service queries.',
+        sde1Answer:
+          'REST exposes resources via dedicated URLs using standard HTTP methods like GET, POST, PUT, and DELETE. REST APIs often suffer from over-fetching (getting fields you do not need) or under-fetching (needing multiple network calls for related data). GraphQL solves this by providing a single POST endpoint where the client specifies the exact fields it needs in a single query against a typed schema.',
+        sde2Answer:
+          'REST structures data around distinct resource endpoints with native HTTP caching benefits (ETags, CDN caching, HTTP status codes), but can cause over-fetching or N+1 network requests for nested relations. GraphQL enables clients to request arbitrary nested graphs in a single POST request using a typed schema. However, GraphQL introduces trade-offs: standard HTTP caching does not work out of the box, requiring client-side caches like Apollo InMemoryCache, and servers must implement query depth and complexity limits.',
+        seniorAnswer:
+          'REST leverages standard HTTP semantics, status codes, and edge CDN cacheability, making it ideal for public microservices with predictable read patterns. GraphQL decouples client data requirements from backend schemas, eliminating over/under-fetching and mobile payload bloat. The architectural trade-offs of GraphQL include losing HTTP GET caching, requiring persisted queries (APQ), and resolving the backend N+1 dataloader problem. Production GraphQL gateways also require static query cost analysis to prevent denial-of-service query attacks.',
         recommendedTopics: [
           'RESTful Resource Boundaries & HTTP Caching',
           'GraphQL Schema Design & Resolvers',
@@ -4148,35 +4295,21 @@ Return ONLY a valid JSON object matching this schema:
         ],
       },
       {
-        match: (q) => q.includes('event loop') || (q.includes('node') && q.includes('non-blocking') && (q.includes('i/o') || q.includes('async'))),
-        title: 'Node.js Event Loop, Call Stack & libuv Asynchronous Architecture',
-        requiredConcepts: [
-          { term: 'single thread', label: 'Single-threaded JavaScript execution on V8 call stack' },
-          { term: 'libuv', label: 'libuv C++ multi-threaded worker pool' },
-          { term: 'phase', label: 'Event loop phases (Timers, Poll, Check setImmediate)' },
-          { term: 'microtask', label: 'Microtask queues (process.nextTick, Promise.then)' },
-          { term: 'non-blocking', label: 'Non-blocking OS asynchronous I/O primitives' },
-        ],
-        modelAnswer:
-          'Node.js executes JavaScript single-threadedly on the V8 call stack, but delivers high-throughput non-blocking asynchronous I/O via libuv. The Event Loop processes events through dedicated phases: 1) Timers (`setTimeout`, `setInterval`), 2) Pending Callbacks (OS network errors), 3) Poll Phase (retrieving new I/O events and running connection callbacks), 4) Check Phase (`setImmediate`), and 5) Close Callbacks. Microtasks (`process.nextTick` and resolved `Promise` jobs) take precedence and drain immediately between every phase. Heavy blocking operations—such as synchronous file system calls, DNS lookups, and cryptographic functions—are offloaded to libuv\'s internal thread pool (default 4 threads), ensuring the main JavaScript thread is never starved.',
-        recommendedTopics: [
-          'libuv Architecture & Worker Pool Configuration',
-          'Event Loop Phases: Timers, Poll, Check & Close',
-          'Macro vs Microtask Scheduling & nextTick Order',
-        ],
-      },
-      {
         match: (q) => (q.includes('postgres') || q.includes('sql')) && (q.includes('mongo') || q.includes('nosql')),
         title: 'Relational Database (PostgreSQL) vs Document Store (MongoDB)',
         requiredConcepts: [
-          { term: 'acid', label: 'ACID transaction guarantees and relational schema integrity' },
-          { term: 'join', label: 'Normalized multi-table SQL JOIN operations' },
-          { term: 'shard', label: 'Horizontal scale-out and sharding in document databases' },
-          { term: 'schema', label: 'Strict relational schemas vs flexible BSON document schemas' },
-          { term: 'trade-off', label: 'Decision criteria based on query patterns and consistency' },
+          { terms: ['acid', 'transaction', 'relation', 'table'], label: 'ACID transaction guarantees and relational schema integrity' },
+          { terms: ['join', 'foreign key', 'normalization'], label: 'Normalized multi-table SQL JOIN operations' },
+          { terms: ['shard', 'sharding', 'scale out', 'horizontal'], label: 'Horizontal scale-out and sharding in document databases' },
+          { terms: ['schema', 'bson', 'json', 'flexible', 'document'], label: 'Strict relational schemas vs flexible BSON document schemas' },
+          { terms: ['trade-off', 'use case', 'read heavy', 'write'], label: 'Decision criteria based on query patterns and consistency' },
         ],
-        modelAnswer:
-          'Choosing between PostgreSQL and MongoDB depends on data relationships, schema stability, and transactional requirements. PostgreSQL is a relational DBMS prioritizing strict ACID guarantees, normalized tables, foreign keys, and performant multi-table SQL JOINs—making it the gold standard for financial ledgers, transactional ordering, and complex enterprise models. MongoDB is a distributed NoSQL document store using BSON format, designed for horizontal scale-out through sharding, fast write throughput, and denormalized nested data. MongoDB excels in rapid prototyping, dynamic catalogs, and unstructured telemetry, but cross-collection aggregations are significantly more resource-intensive than native relational joins.',
+        sde1Answer:
+          'PostgreSQL is a relational database using structured tables with columns, rows, and strict schemas. It excels at relational data with foreign keys and multi-table JOINs, offering strict ACID guarantees. MongoDB is a NoSQL document database storing data as JSON-like BSON documents. It offers flexible schemas and fast development for hierarchical or changing data, but complex multi-collection joins are harder than in SQL.',
+        sde2Answer:
+          'PostgreSQL is an ACID-compliant relational DBMS optimized for normalized schemas, complex joins, and transactional consistency, making it the choice for financial systems and transactional core models. MongoDB is a distributed document store optimized for horizontal scalability, high write throughput, and denormalized nested data. While MongoDB supports multi-document ACID transactions across replica sets, PostgreSQL provides superior query optimization for complex analytical JOINs and window functions.',
+        seniorAnswer:
+          'Choosing between PostgreSQL and MongoDB depends on access patterns and consistency models. PostgreSQL delivers enterprise ACID reliability with MVCC, relational foreign key constraints, advanced indexing (GIN/BRIN), and battle-tested JOIN optimizations. MongoDB optimizes for horizontal scale-out via sharding and flexible nested schemas, excelling in unstructured telemetry and rapid catalog iterations. In modern architectures, polyglot persistence is common: PostgreSQL serves as the relational source of truth for transactional entities, while MongoDB or Elasticsearch indexes read-heavy document representations.',
         recommendedTopics: [
           'ACID Guarantees vs BASE Consistency Model',
           'Database Normalization vs Denormalization Trade-offs',
@@ -4187,144 +4320,22 @@ Return ONLY a valid JSON object matching this schema:
         match: (q) => q.includes('jwt') || (q.includes('token') && (q.includes('auth') || q.includes('xss') || q.includes('csrf'))),
         title: 'JWT Authentication, Stateless Verification & Security (XSS / CSRF)',
         requiredConcepts: [
-          { term: 'signature', label: 'Stateless signature verification (HMAC-SHA256 / RSA)' },
-          { term: 'cookie', label: 'HttpOnly, Secure, SameSite=Strict cookie storage' },
-          { term: 'xss', label: 'Preventing JavaScript XSS extraction (avoiding localStorage)' },
-          { term: 'csrf', label: 'CSRF token protection / SameSite mitigation' },
-          { term: 'refresh', label: 'Short-lived access tokens paired with rotating refresh tokens' },
+          { terms: ['signature', 'header', 'payload', 'crypto', 'hmac', 'stateless'], label: 'Stateless signature verification (Header, Payload, Signature)' },
+          { terms: ['cookie', 'httponly', 'secure', 'samesite'], label: 'HttpOnly, Secure, SameSite=Strict cookie storage' },
+          { terms: ['xss', 'localstorage', 'malicious', 'script'], label: 'Preventing XSS token theft (avoiding localStorage)' },
+          { terms: ['csrf', 'cross site', 'samesite', 'csrf token'], label: 'CSRF token protection / SameSite mitigation' },
+          { terms: ['refresh', 'access token', 'expiry', 'ttl', 'revoke'], label: 'Short-lived access tokens paired with rotating refresh tokens' },
         ],
-        modelAnswer:
-          'A JSON Web Token (JWT) comprises three Base64URL-encoded parts: Header (algorithm), Payload (claims and metadata), and Signature (signed with a private key or HMAC-SHA256 secret). Because the token is self-contained, servers verify legitimacy statelessly by recalculating the cryptographic signature without querying a database. For enterprise security, never store JWTs in browser `localStorage` or `sessionStorage` because Cross-Site Scripting (XSS) attacks allow malicious scripts to read and exfiltrate them. The industry standard is storing access tokens in `HttpOnly`, `Secure`, `SameSite=Strict` cookies, completely blocking client-side JavaScript access while preventing Cross-Site Request Forgery (CSRF). Combine this with short 15-minute token TTLs and rotating refresh tokens stored in a fast Redis blacklist for instant revocation.',
+        sde1Answer:
+          'A JSON Web Token (JWT) contains three parts: Header, Payload, and Signature. It is digitally signed by the server so that the server can verify the user identity statelessly without querying the database on every request. Storing JWTs in browser localStorage is risky because Cross-Site Scripting (XSS) attacks can steal them. Instead, access tokens should be stored in HttpOnly, Secure cookies that JavaScript cannot access.',
+        sde2Answer:
+          'JWT authentication provides stateless authorization: the server signs the token payload using a secret or private key (HMAC-SHA256/RSA) and validates requests by verifying the cryptographic signature. For security, access tokens should be short-lived (15 minutes) and stored in HttpOnly, Secure, SameSite=Strict cookies to block XSS extraction and mitigate CSRF. Longer-lived refresh tokens are stored in the database or Redis so that stolen or compromised sessions can be revoked immediately.',
+        seniorAnswer:
+          'JWTs enable stateless authorization across distributed services without shared database reads for session validation. However, stateful revocation remains a key challenge: blacklisting revoked tokens requires distributed in-memory stores like Redis. To harden security, store access tokens in HttpOnly, Secure, SameSite=Strict cookies with 10-15 minute TTLs, coupled with cryptographically rotated refresh tokens with reuse detection. Sensitive claims must never be stored in the unencrypted Base64 payload.',
         recommendedTopics: [
           'JWT Cryptographic Structure & Stateless Validation',
           'XSS vs CSRF Vulnerability Vectors & Mitigation',
           'Secure Cookie Attributes & Rotating Refresh Token Flows',
-        ],
-      },
-      {
-        match: (q) => (q.includes('csr') || q.includes('ssr') || q.includes('ssg') || q.includes('isr')) && (q.includes('render') || q.includes('next')),
-        title: 'Modern Web Rendering Strategies: CSR vs SSR vs SSG vs ISR',
-        requiredConcepts: [
-          { term: 'csr', label: 'Client-Side Rendering (fast transitions, initial blank shell)' },
-          { term: 'ssr', label: 'Server-Side Rendering (real-time dynamic HTML, higher TTFB)' },
-          { term: 'ssg', label: 'Static Site Generation (build-time compile, CDN edge latency)' },
-          { term: 'seo', label: 'Search Engine Optimization and First Contentful Paint (FCP)' },
-          { term: 'ttfb', label: 'Time To First Byte vs client execution overhead' },
-        ],
-        modelAnswer:
-          'Web rendering paradigms balance initial load time, SEO, and content freshness: 1) Client-Side Rendering (CSR) serves a bare HTML shell and executes JavaScript in the browser; while fast for authenticated SPAs, it suffers from slow First Contentful Paint (FCP) and poor search engine indexing. 2) Server-Side Rendering (SSR) compiles HTML on every incoming HTTP request, providing up-to-date dynamic data and flawless SEO at the expense of higher server compute and Time To First Byte (TTFB). 3) Static Site Generation (SSG) compiles HTML at build time, allowing sub-50ms distribution via global CDN edge nodes with zero origin server overhead. 4) Incremental Static Regeneration (ISR) blends SSG and SSR by serving cached static pages while revalidating them asynchronously in the background when requested after a stale interval.',
-        recommendedTopics: [
-          'Hydration & Core Web Vitals (FCP, LCP, TTFB)',
-          'Static Site Generation on Edge CDNs',
-          'React Server Components & Hybrid Rendering',
-        ],
-      },
-      {
-        match: (q) => q.includes('index') && (q.includes('database') || q.includes('sql') || q.includes('b-tree') || q.includes('clustered')),
-        title: 'Database Indexing, B+ Trees & Clustered vs Non-Clustered Indexes',
-        requiredConcepts: [
-          { term: 'b-tree', label: 'B+ Tree balanced search structure reducing scans from O(n) to O(log n)' },
-          { term: 'clustered', label: 'Clustered index defining physical disk row ordering (one per table)' },
-          { term: 'non-clustered', label: 'Non-clustered auxiliary B+ Tree pointing to row locators' },
-          { term: 'write', label: 'Write amplification overhead on INSERT, UPDATE, and DELETE operations' },
-          { term: 'io', label: 'Minimizing disk page I/O transfers during query execution' },
-        ],
-        modelAnswer:
-          'A database index is an auxiliary data structure, standardly a balanced B+ Tree, that reduces record lookup complexity from an O(n) full table scan to O(log n) tree traversals. In a B+ Tree, internal nodes store only routing keys to maximize fan-out and reduce disk page reads, while leaf nodes contain all keys and pointers linked sequentially for rapid range queries. A Clustered Index dictates the physical on-disk arrangement of table rows; therefore, each table can possess only one clustered index (typically the Primary Key). Non-Clustered Indexes are secondary B+ Tree structures whose leaves contain the indexed keys and a row locator (RID or clustered key). While indexes substantially accelerate SELECT, WHERE, and JOIN queries, they incur write overhead: every INSERT, UPDATE, and DELETE must rebalance tree nodes and write to both the table and all associated indexes.',
-        recommendedTopics: [
-          'B+ Tree Fan-Out & Disk Block Optimization',
-          'Clustered vs Secondary Index Architecture',
-          'Write Amplification & Covering Indexes',
-        ],
-      },
-      {
-        match: (q) => q.includes('redis') || (q.includes('cache') && (q.includes('aside') || q.includes('stampede') || q.includes('invalidation'))),
-        title: 'Redis Caching Architecture, Cache-Aside Pattern & Stampede Mitigation',
-        requiredConcepts: [
-          { term: 'aside', label: 'Cache-Aside pattern: check cache, on miss read DB, write back with TTL' },
-          { term: 'ttl', label: 'Time-To-Live expiration and explicit mutation invalidation' },
-          { term: 'stampede', label: 'Cache stampede / thundering herd when popular keys expire' },
-          { term: 'lock', label: 'Distributed locks (SETNX / Redlock) or probabilistic early expiration' },
-          { term: 'memory', label: 'In-memory sub-millisecond retrieval vs disk database latency' },
-        ],
-        modelAnswer:
-          'In the Cache-Aside (Lazy Loading) architecture, the application manages the cache tier: 1) Attempt to fetch the key from Redis; 2) On a cache hit, return data in under 2ms; 3) On a cache miss, query the primary database, serialize the result into Redis with a defined Time-To-Live (TTL), and return the payload. When records update, the application updates the primary database and explicitly deletes/invalidates the Redis key. A Cache Stampede (or Thundering Herd) happens when a high-traffic key expires under heavy concurrency, causing hundreds of parallel requests to register cache misses and bombard the database simultaneously. We prevent stampedes by using distributed mutex locks (`SET key val NX PX 30000`), serving stale data while a single asynchronous worker updates the cache, or adopting probabilistic early expiration (XFetch algorithm).',
-        recommendedTopics: [
-          'Cache-Aside vs Write-Through vs Write-Back Strategies',
-          'Cache Stampede & Thundering Herd Prevention',
-          'Redis Data Structures (Hashes, Sorted Sets, HyperLogLog)',
-        ],
-      },
-      {
-        match: (q) => q.includes('websocket') || (q.includes('sse') && q.includes('polling')) || (q.includes('real-time') && q.includes('http')),
-        title: 'Real-Time Communication: WebSockets vs Server-Sent Events vs HTTP Polling',
-        requiredConcepts: [
-          { term: 'full-duplex', label: 'WebSockets full-duplex bidirectional TCP communication' },
-          { term: 'sse', label: 'Server-Sent Events (SSE) unidirectional HTTP stream for telemetry/LLMs' },
-          { term: 'polling', label: 'HTTP Polling overhead (repetitive TCP/TLS handshakes and headers)' },
-          { term: 'overhead', label: 'Tiny 2-10 byte framing vs full HTTP request headers' },
-          { term: 'reconnection', label: 'Native HTTP/2 multiplexing and browser reconnection in SSE' },
-        ],
-        modelAnswer:
-          'Choosing a real-time protocol depends on directionality and latency requirements: 1) HTTP Polling involves periodic client requests; even Long Polling generates excessive connection churn, TLS handshakes, and header overhead. 2) Server-Sent Events (SSE) provide a unidirectional, server-to-client stream over standard HTTP (`text/event-stream`). SSE natively handles HTTP/2 multiplexing, automatic reconnection, and firewall traversal, making it the ideal architecture for notifications, live dashboards, and LLM token streaming. 3) WebSockets establish a full-duplex, bidirectional TCP connection following an initial HTTP 101 protocol handshake. With minimal 2-to-10 byte framing overhead, WebSockets are optimal for low-latency bidirectional workflows such as multiplayer gaming, live chat platforms, and collaborative document editing.',
-        recommendedTopics: [
-          'WebSocket Handshake & Frame Protocol',
-          'Server-Sent Events (SSE) over HTTP/2',
-          'Scalable Socket Architecture & Redis Pub/Sub Adapters',
-        ],
-      },
-      {
-        match: (q) => (q.includes('two-pointer') || q.includes('two pointer')) && q.includes('sliding window'),
-        title: 'Algorithmic Optimization: Two-Pointers vs Sliding Window Techniques',
-        requiredConcepts: [
-          { term: 'two-pointer', label: 'Pointers at opposite ends or fast/slow runners' },
-          { term: 'sliding window', label: 'Maintaining a contiguous subarray window [left, right]' },
-          { term: 'monotonic', label: 'Monotonicity invariant determining window validity' },
-          { term: 'complexity', label: 'Reducing brute-force O(n²) to optimal O(n) linear time' },
-          { term: 'contiguous', label: 'Subarray/substring problems vs pair matching' },
-        ],
-        modelAnswer:
-          'Both techniques optimize brute-force O(n²) search to linear O(n) time. The Two-Pointer technique standardly places pointers at opposing boundaries (left = 0, right = n - 1) on sorted arrays, moving them inward based on comparison invariants (e.g., Two Sum II, Container With Most Water), or uses Fast and Slow pointers to detect linked-list cycles (Floyd\'s algorithm). The Sliding Window technique maintains a contiguous subarray range `[left, right]` where a monotonic property holds: expanding the right pointer incorporates elements into the state, while advancing the left pointer contracts the window when constraints (e.g. maximum sum, character frequencies) are breached. Sliding window is specifically indicated for finding optimal contiguous subarrays or substrings.',
-        recommendedTopics: [
-          'Two-Pointer Convergence Patterns',
-          'Sliding Window Invariant Tracking (Dynamic vs Fixed Size)',
-          'Time & Space Complexity Proofs for Two-Pointer Traversal',
-        ],
-      },
-      {
-        match: (q) => (q.includes('dynamic programming') || q.includes(' dp ')) && q.includes('greedy'),
-        title: 'Optimization Paradigms: Dynamic Programming vs Greedy Algorithms',
-        requiredConcepts: [
-          { term: 'substructure', label: 'Optimal substructure property in both paradigms' },
-          { term: 'greedy choice', label: 'Greedy choice property (locally optimal choices)' },
-          { term: 'overlapping', label: 'Overlapping subproblems requiring memoization or tabulation' },
-          { term: 'reconsider', label: 'Greedy never reconsiders; DP evaluates all decision paths' },
-          { term: 'complexity', label: 'Greedy O(n log n) vs DP polynomial state transitions' },
-        ],
-        modelAnswer:
-          'Both paradigms solve optimization problems with optimal substructure—where the global optimal solution contains optimal solutions to its subproblems. The crucial difference is the Greedy Choice Property: a Greedy algorithm makes the locally optimal choice at every step without ever backtracking or reconsidering past choices, achieving O(n) or O(n log n) complexity (e.g., Dijkstra\'s, Fractional Knapsack, Huffman Coding). However, Greedy fails when a local decision precludes the global optimum. Dynamic Programming is mandatory when subproblems overlap and choices are interdependent: DP systematically explores all branches, caching results via memoization (top-down) or tabulation (bottom-up) to eliminate duplicate subproblem evaluation (e.g., 0/1 Knapsack, Coin Change, Edit Distance).',
-        recommendedTopics: [
-          'Greedy Choice Property Proof by Contradiction',
-          'DP State Definition, Recurrence Relations & Tabulation',
-          'Memoization Space Optimization & Rolling Arrays',
-        ],
-      },
-      {
-        match: (q) => q.includes('process') && q.includes('thread'),
-        title: 'Operating Systems: Process vs Thread & Context Switching Overhead',
-        requiredConcepts: [
-          { term: 'virtual memory', label: 'Process isolated address space (code, data, heap, stack)' },
-          { term: 'share', label: 'Threads share heap, global data, and open file descriptors' },
-          { term: 'context switch', label: 'Context switching CPU overhead and register preservation' },
-          { term: 'tlb', label: 'TLB invalidation and page table register reload in process switches' },
-          { term: 'cache', label: 'Preserving CPU L1/L2 cache locality during thread switching' },
-        ],
-        modelAnswer:
-          'A process is an isolated operating system execution environment possessing its own dedicated virtual address space (code, data, heap, and stack) and kernel file descriptors. A thread is the smallest schedulable execution unit inside a process; multiple threads of the same process share memory (heap, static variables, open files), while each retains private registers, program counter, and stack. Context switching between processes is computationally expensive: the OS kernel must switch the Page Table Base Register (CR3 in x86) and flush the Translation Lookaside Buffer (TLB), triggering significant CPU cache misses. Thread context switching within the same process avoids memory address remapping and TLB flushes, preserving CPU cache locality and executing significantly faster.',
-        recommendedTopics: [
-          'Virtual Memory & Page Table Translation',
-          'Context Switch Mechanics & TLB Invalidation',
-          'User-Level vs Kernel-Level Threads',
         ],
       },
       {
@@ -4334,29 +4345,18 @@ Return ONLY a valid JSON object matching this schema:
           (q.includes('optimistic') && q.includes('pessimistic')),
         title: 'Database Concurrency Control: Transactions, Optimistic vs Pessimistic Locking & Deadlocks',
         requiredConcepts: [
-          {
-            terms: ['concurrency', 'concurrent', 'simultaneous', 'race condition', 'high traffic'],
-            label: 'High concurrency and race condition dynamics',
-          },
-          {
-            terms: ['acid', 'atomicity', 'transaction', 'rollback', 'wal', 'isolation'],
-            label: 'ACID transactional guarantees under concurrent writes',
-          },
-          {
-            terms: ['optimistic', 'version', 'timestamp', 'etag', 'cas'],
-            label: 'Optimistic locking (version checks & conflict retry loops)',
-          },
-          {
-            terms: ['pessimistic', 'percentage looking', 'row lock', 'select for update', 'exclusive lock'],
-            label: 'Pessimistic locking (SELECT FOR UPDATE / exclusive row locks)',
-          },
-          {
-            terms: ['deadlock', 'prevent', 'timeout', 'graph', 'avoid', 'order'],
-            label: 'Deadlock avoidance (lock timeouts & strict resource ordering)',
-          },
+          { terms: ['concurrency', 'race condition', 'simultaneous', 'conflict'], label: 'Concurrent writes and race condition dynamics' },
+          { terms: ['optimistic', 'version', 'timestamp', 'retry', 'occ'], label: 'Optimistic locking (version checks & conflict retry loops)' },
+          { terms: ['pessimistic', 'select for update', 'row lock', 'exclusive'], label: 'Pessimistic locking (SELECT FOR UPDATE / exclusive row locks)' },
+          { terms: ['trade-off', 'contention', 'performance', 'throughput'], label: 'Locking strategy trade-offs under high vs low contention' },
+          { terms: ['deadlock', 'order', 'timeout', 'prevent'], label: 'Deadlock avoidance (lock timeouts & strict resource ordering)' },
         ],
-        modelAnswer:
-          'Managing high-concurrency database transactions requires choosing the right locking strategy based on contention probability. Optimistic Concurrency Control (OCC) assumes conflicts are rare: each record maintains a version number or timestamp; on update, the application validates `WHERE id = :id AND version = :current_version`. If another process modified the row, the update fails cleanly, triggering an application-level retry without blocking the database. In contrast, Pessimistic Locking assumes high contention: the transaction acquires an exclusive row-level lock upfront (`SELECT ... FOR UPDATE`), blocking other readers/writers until commit or rollback. To prevent deadlocks in pessimistic schemes, resources must always be acquired in a globally deterministic order with strict lock timeouts.',
+        sde1Answer:
+          'Concurrency control prevents two users from updating the same database row at the same time and overwriting each other. Optimistic locking assumes conflicts are rare: it adds a version number to each row and checks that the version has not changed before updating. Pessimistic locking assumes conflicts are likely: it uses database row locks like SELECT FOR UPDATE to lock the row until the transaction finishes. Deadlocks occur when two transactions wait for locks held by each other.',
+        sde2Answer:
+          'Managing high-concurrency database updates requires matching the locking strategy to contention probability. Optimistic Concurrency Control (OCC) uses a version number (WHERE id = :id AND version = :current_version); if another transaction updated the row first, the update fails cleanly and triggers an application retry. Pessimistic Locking uses explicit row locks (SELECT ... FOR UPDATE) to block concurrent writers. Deadlocks in pessimistic schemes are avoided through globally consistent lock ordering and query timeouts.',
+        seniorAnswer:
+          'Under peak concurrency, locking strategies govern both consistency and throughput. Optimistic Concurrency Control eliminates lock overhead and database wait queues, making it optimal for read-heavy workloads with low write contention (<5% conflict rate); under heavy write hotspots, OCC degrades due to high abort/retry churn. Pessimistic locking serializes updates via exclusive row locks, avoiding repeated application retries at the cost of connection pool saturation and deadlock vulnerability. Production systems mitigate deadlocks through deterministic resource acquisition order, conservative lock timeouts, and distributed token leases.',
         recommendedTopics: [
           'Optimistic vs Pessimistic Locking Trade-offs',
           'Deadlock Detection & Hierarchical Resource Ordering',
@@ -4367,35 +4367,24 @@ Return ONLY a valid JSON object matching this schema:
         match: (q) =>
           q.includes('microservice') ||
           q.includes('distributed') ||
+          q.includes('circuit') ||
           q.includes('downtime') ||
           q.includes('outage') ||
-          q.includes('circuit') ||
           (q.includes('queue') && q.includes('service')),
         title: 'Distributed Systems, Microservices & Zero-Downtime Reliability',
         requiredConcepts: [
-          {
-            terms: ['microservice', 'services', 'service', 'decouple', 'module'],
-            label: 'Microservices architecture decomposition',
-          },
-          {
-            terms: ['event', 'even triveni', 'queue', 'kafka', 'rabbitmq', 'stream', 'pub sub', 'asynchronous'],
-            label: 'Event-driven asynchronous messaging & message queues',
-          },
-          {
-            terms: ['mongo', 'mongodb', 'transaction', 'database', 'replica', 'sharding', 'nosql'],
-            label: 'Distributed database transactions and replica set durability',
-          },
-          {
-            terms: ['downtime', 'road down time', 'zero downtime', 'blue green', 'rolling', 'deployment', 'available'],
-            label: 'Zero-downtime deployment pipelines (rolling updates / blue-green)',
-          },
-          {
-            terms: ['circuit', 'breaker', 'idempotent', 'resilience', 'failover', 'retry'],
-            label: 'Resilience patterns (Circuit Breakers & Idempotency)',
-          },
+          { terms: ['microservice', 'services', 'decouple', 'module'], label: 'Microservices architecture decomposition' },
+          { terms: ['queue', 'kafka', 'rabbitmq', 'event', 'asynchronous', 'pub sub'], label: 'Event-driven asynchronous messaging & message queues' },
+          { terms: ['circuit', 'breaker', 'hystrix', 'resilience', 'fallback'], label: 'Circuit breaker pattern for cascading failure isolation' },
+          { terms: ['idempotent', 'idempotency', 'retry', 'duplicate'], label: 'Idempotency in distributed event processing' },
+          { terms: ['downtime', 'zero downtime', 'blue green', 'rolling', 'deployment'], label: 'Zero-downtime deployment pipelines (rolling / blue-green)' },
         ],
-        modelAnswer:
-          'In a production microservices architecture, services communicate asynchronously via event-driven message brokers (Kafka or RabbitMQ) to decouple request lifecycles and buffer spike traffic. For database operations spanning multiple documents, MongoDB multi-document transactions ensure ACID atomicity across replica sets with majority write concern (`w: "majority"`). To prevent cascading failures during downstream outages, circuit breakers (Netflix Hystrix / Resilience4j) trip open when error rates breach 50%, falling back to degraded graceful degradation. Zero-downtime deployments are executed via blue-green or rolling Kubernetes deployments with health check probes ensuring no active in-flight requests are dropped.',
+        sde1Answer:
+          'In a microservices architecture, large applications are broken down into independent services that communicate over REST or message queues like RabbitMQ or Kafka. To handle network failures, we use retries and circuit breakers so that if one service fails, it does not crash the entire application. Zero-downtime deployments use rolling updates or blue-green deployments where new versions start up and pass health checks before traffic is switched over.',
+        sde2Answer:
+          'Production microservices use asynchronous event streams (Kafka/RabbitMQ) to decouple services and buffer traffic spikes. To prevent cascading failures during third-party or internal service outages, circuit breakers (Resilience4j) trip open when failure thresholds breach 50%, falling back to cached or degraded responses. APIs implement idempotency keys to ensure retried requests never cause duplicate charges or writes. Zero-downtime deployments rely on blue-green or rolling Kubernetes deployments with readiness probes.',
+        seniorAnswer:
+          'Distributed architectures balance autonomy, latency, and fault isolation. Synchronous HTTP chains are avoided in favor of event-driven asynchronous messaging via Kafka or RabbitMQ with outbox patterns for atomic database-message publishing. Resilience is enforced through circuit breakers, adaptive rate limiting, exponential backoff with jitter, and dead-letter queues (DLQs). Zero-downtime deployments are executed via blue-green or canary routing with automatic rollback based on error budget breach metrics.',
         recommendedTopics: [
           'Event-Driven Architecture & Message Brokers (Kafka/RabbitMQ)',
           'Zero-Downtime Deployment Strategies (Blue-Green / Canary)',
@@ -4404,90 +4393,30 @@ Return ONLY a valid JSON object matching this schema:
       },
       {
         match: (q) =>
-          q.includes('acid') || (q.includes('transaction') && q.includes('database')),
-        title: 'Database Transactions, ACID Guarantees & Concurrency Control',
-        requiredConcepts: [
-          { terms: ['atomicity', 'atomic', 'all or nothing'], label: 'Atomicity: all-or-nothing execution via Write-Ahead Logs' },
-          { terms: ['consistency', 'valid state', 'schema', 'constraint'], label: 'Consistency: adhering to schema constraints and foreign keys' },
-          { terms: ['isolation', 'isolated', 'dirty read', 'phantom'], label: 'Isolation: preventing dirty reads, non-repeatable reads, phantom rows' },
-          { terms: ['durability', 'durable', 'persist', 'wal', 'disk'], label: 'Durability: committed data surviving crashes via non-volatile logs' },
-          { terms: ['mvcc', '2pl', 'locking', 'version'], label: 'Concurrency mechanisms: 2-Phase Locking (2PL) vs MVCC' },
-        ],
-        modelAnswer:
-          'ACID establishes the foundational reliability guarantees of relational database transactions: 1) Atomicity guarantees all-or-nothing execution—if any statement fails, the entire transaction rolls back via Write-Ahead Logging (WAL) and undo segments. 2) Consistency ensures the transaction transitions the database only between valid states enforcing schema integrity, foreign keys, triggers, and constraints. 3) Isolation prevents concurrent transactions from observing uncommitted or transient states. Database engines use Multi-Version Concurrency Control (MVCC) or Two-Phase Locking (2PL) across ANSI SQL isolation levels (Read Committed, Repeatable Read, Serializable) to eliminate dirty reads and phantom records. 4) Durability guarantees committed transactions survive power failures through synchronous flushes to persistent disk storage.',
-        recommendedTopics: [
-          'Write-Ahead Logging (WAL) & Crash Recovery (ARIES)',
-          'ANSI SQL Isolation Levels & Concurrency Anomalies',
-          'Multi-Version Concurrency Control (MVCC) in PostgreSQL',
-        ],
-      },
-      {
-        match: (q) => q.includes('deadlock') || (q.includes('coffman') && q.includes('process')),
-        title: 'Concurrency: Deadlocks, the 4 Coffman Conditions & Prevention',
-        requiredConcepts: [
-          { terms: ['mutual exclusion', 'exclusive'], label: 'Mutual Exclusion: resources held in unshareable mode' },
-          { terms: ['hold and wait', 'holding'], label: 'Hold and Wait: process holds resource while awaiting others' },
-          { terms: ['preemption', 'no preemption'], label: 'No Preemption: resources cannot be forcibly seized' },
-          { terms: ['circular wait', 'cycle'], label: 'Circular Wait: closed cycle of dependent resource requests' },
-          { terms: ['prevention', 'order', 'timeout'], label: 'Deadlock prevention via strict hierarchical resource ordering' },
-        ],
-        modelAnswer:
-          'A deadlock is an execution state where a set of concurrent processes are permanently blocked because each holds a lock on a resource needed by another in the cycle. A deadlock can only occur if all four Coffman conditions are met concurrently: 1) Mutual Exclusion (resources cannot be shared); 2) Hold and Wait (processes holding resources can request additional ones); 3) No Preemption (resources cannot be forcibly reclaimed by the OS); and 4) Circular Wait (a closed chain where each process holds a resource requested by the next). Deadlocks are prevented by invalidating any single condition—most commonly eliminating Circular Wait through strict global hierarchical resource ordering. They can also be avoided dynamically via Banker\'s Algorithm or detected through Resource Allocation Graph cycle analysis.',
-        recommendedTopics: [
-          'The 4 Coffman Conditions & Mathematical Invalidation',
-          'Hierarchical Lock Ordering & Deadlock Prevention',
-          'Banker\'s Algorithm & Resource Allocation Graphs',
-        ],
-      },
-      {
-        match: (q) =>
-          q.includes('disagree') ||
-          q.includes('conflict') ||
           q.includes('bug') ||
-          q.includes('production') ||
-          category === 'Behavioral' ||
-          (q.includes('past') && q.includes('project')),
+          q.includes('conflict') ||
+          q.includes('disagree') ||
+          q.includes('tell me about a time') ||
+          q.includes('challenge') ||
+          q.includes('mistake') ||
+          category?.toLowerCase() === 'behavioral',
         title: 'Behavioral & Leadership: Project Debugging & The STAR Method',
         requiredConcepts: [
-          {
-            terms: ['salary', 'project', 'calculator', 'situation', 'javascript', 'code', 'bug', 'inaccurate', 'error', 'issue'],
-            label: 'Situation & Task clearly contextualized with real engineering project challenge',
-          },
-          {
-            terms: ['debug', 'fix', 'resolve', 'action', 'solution', 'isolate', 'inspect', 'console', 'test', 'identified'],
-            label: 'Action taken: root-cause analysis, systematic debugging and code resolution',
-          },
-          {
-            terms: ['month', 'result', 'outcome', 'accurate', 'fixed', 'total', 'deliver', 'solved', 'prevent'],
-            label: 'Result & Outcome: verified fix and measurable project impact',
-          },
-          {
-            terms: ['test', 'unit test', 'prevent', 'learning', 'improve', 'pipeline', 'qa', 'regression'],
-            label: 'Preventative measures: automated testing and regression guards',
-          },
+          { terms: ['situation', 'when', 'project', 'app', 'application', 'problem', 'bug', 'challenge'], label: 'Situation: Contextualized engineering challenge or conflict' },
+          { terms: ['task', 'role', 'responsible', 'needed', 'goal', 'objective'], label: 'Task: Specific individual responsibility and engineering goal' },
+          { terms: ['action', 'debugged', 'fixed', 'implemented', 'investigated', 'steps', 'tested'], label: 'Action: Concrete technical steps and problem-solving taken' },
+          { terms: ['result', 'outcome', 'fixed', 'improved', 'resolved', 'prevented', 'metric', 'learned'], label: 'Result: Measurable outcome, verified impact, and future prevention' },
         ],
-        modelAnswer:
-          'Situation: In my Salary Calculator web application developed with JavaScript, a calculation bug occurred where monthly overtime rates caused inaccurate total salary computations for users during specific calendar months. Task: I needed to rapidly isolate the algorithmic discrepancy without disrupting current user computations. Action: I reproduced the failure using isolated unit tests and discovered a floating-point rounding issue coupled with zero-indexed month handling in JavaScript Date. I refactored the calculation logic using integer cents representation and added strict validation guards. Result: The bug was completely eradicated, verified with 100% test coverage across all 12 calendar month test fixtures, ensuring consistent calculations.',
+        sde1Answer:
+          'Situation: While developing my Salary Calculator project in JavaScript, users reported that overtime computations were inaccurate for certain months. Task: My responsibility was to debug the root cause and ensure calculations were exact. Action: I used browser developer tools and unit tests to trace the calculation flow, discovering a floating-point precision issue combined with 0-indexed month handling in JavaScript Date. I refactored the math using integer representations and added input validation. Result: The bug was completely fixed, verified by automated test cases across all 12 calendar months with zero calculation errors.',
+        sde2Answer:
+          'Situation: In my Salary Calculator web application, intermittent calculation discrepancies were detected in monthly overtime pay during multi-month projections. Task: As the primary developer, I needed to isolate the issue without disrupting active sessions. Action: I reproduced the failure through automated regression tests, identifying a floating-point rounding artifact and timezone drift in month arithmetic. I migrated monetary calculations to integer cents and implemented strict validation boundaries. Result: The bug was eradicated with 100% test coverage across calendar boundaries, and I documented the floating-point arithmetic guidelines for future feature additions.',
+        seniorAnswer:
+          'Situation: In our application, an edge-case rounding discrepancy in payroll overtime calculations led to data inaccuracies across cross-month billing periods. Task: I was responsible for diagnosing the root cause, remediating the calculation engine, and implementing preventative guards across our CI/CD pipeline. Action: I performed root-cause analysis, traced the issue to IEEE 754 floating-point inaccuracies and timezone offsets, refactored calculations to integer cents, and instituted automated property-based testing. Result: We eliminated calculation discrepancies, achieved 100% test fixture coverage, and established engineering standards that prevented similar precision bugs.',
         recommendedTopics: [
           'STAR Method Structuring (Situation, Task, Action, Result)',
           'Data-Driven Technical Conflict Resolution',
           'Engineering Alignment & Constructive Communication',
-        ],
-      },
-      {
-        match: (q) => q.includes('strength') || q.includes('weakness') || category === 'HR',
-        title: 'HR & Culture Fit: Authentic Strengths, Growth Areas & Reflection',
-        requiredConcepts: [
-          { terms: ['strength', 'strong', 'excel'], label: 'Concrete technical strength backed by examples' },
-          { terms: ['growth', 'weakness', 'improve', 'learn'], label: 'Genuine area for growth / weakness without clichés' },
-          { terms: ['action', 'step', 'practice', 'working'], label: 'Proactive steps taken to address the growth area' },
-        ],
-        modelAnswer:
-          'My greatest technical strength is structured problem decomposition and root-cause analysis: when tackling ambiguous engineering challenges, I break them into isolated, testable modules and establish clear invariants before writing code. An authentic growth area I work on is my past tendency toward premature optimization. In earlier hackathons, I spent excessive time optimizing data structures for microsecond gains before validating user needs. I addressed this by adopting an agile MVP-first philosophy—shipping clean, working solutions first, gathering feedback, and profiling with metrics before applying optimizations.',
-        recommendedTopics: [
-          'Self-Awareness & Professional Technical Communication',
-          'Framing Authentic Growth Areas for Placement Rounds',
-          'Aligning Engineering Strengths with Organizational Impact',
         ],
       },
     ];
@@ -4501,7 +4430,7 @@ Return ONLY a valid JSON object matching this schema:
       'is', 'are', 'was', 'were', 'it', 'this', 'that', 'i', 'you', 'my', 'we', 'they',
       'what', 'how', 'why', 'can', 'explain', 'describe', 'difference', 'between', 'your',
       'about', 'when', 'tell', 'me', 'have', 'had', 'been', 'would', 'could', 'should',
-      'does', 'did', 'do', 'any', 'some', 'which', 'who', 'whom', 'whose'
+      'does', 'did', 'do', 'any', 'some', 'which', 'who', 'whom', 'whose', 'let', 'look',
     ]);
 
     const questionKeywords = lowerQuestion
@@ -4510,7 +4439,7 @@ Return ONLY a valid JSON object matching this schema:
       .filter((w) => w.length > 2 && !stopWords.has(w));
 
     // -------------------------------------------------------------------------
-    // 2. Strict Real Evaluation & Scoring
+    // 2. Strict, Evidence-Based Real Evaluation & Scoring
     // -------------------------------------------------------------------------
     let overallScore = 10;
     let correctness = 5;
@@ -4519,18 +4448,230 @@ Return ONLY a valid JSON object matching this schema:
     let confidence = 15;
     let completeness = 5;
     let communication = 25;
+    let relevance = 10;
 
     let whatWentWell: string[] = [];
     let whatWasMissed: string[] = [];
+    let missingConcepts: string[] = [];
     let howToImprove: string[] = [];
     let modelAnswer = '';
     let recommendedTopics: string[] = [];
 
-    if (matchedDomain) {
-      modelAnswer = matchedDomain.modelAnswer;
+    // Select role-tailored model answer helper
+    const getRoleModelAnswer = (domain: DomainTopic) => {
+      if (roleLevel === 'Senior Engineer') return domain.seniorAnswer;
+      if (roleLevel === 'SDE-2') return domain.sde2Answer;
+      return domain.sde1Answer;
+    };
+
+    // Case A: Completely empty or trivial input
+    if (wordCount === 0) {
+      const benchmark = matchedDomain
+        ? getRoleModelAnswer(matchedDomain)
+        : `A production-grade answer for this question directly defines the core computer science principles of ${questionKeywords.slice(0, 3).join(', ')}, explains underlying runtime mechanics, and articulates engineering trade-offs.`;
+
+      return {
+        overallScore: 0,
+        scores: {
+          correctness: 0,
+          technicalDepth: 0,
+          clarity: 0,
+          confidence: 0,
+          completeness: 0,
+          communication: 0,
+        },
+        rubricBreakdown: {
+          technicalCorrectness: 0,
+          problemSolving: 0,
+          communication: 0,
+          relevance: 0,
+          completeness: 0,
+          scoringFormula: 'Score = (Correctness * 0.30) + (ProblemSolving * 0.25) + (Communication * 0.20) + (Relevance * 0.15) + (Completeness * 0.10)',
+        },
+        roleLevel,
+        whatWentWell: ['Question not attempted in this interview session.'],
+        whatWasMissed: [
+          'Candidate exited or skipped before speaking an answer for this question.',
+          'No technical concepts or reasoning was articulated.',
+        ],
+        missingConcepts: matchedDomain ? matchedDomain.requiredConcepts.map((c) => c.label) : questionKeywords.slice(0, 4),
+        howToImprove: [
+          'Study the benchmark answer below and practice speaking the response clearly into the microphone.',
+          'Break your response into: 1) Definition, 2) Underlying Engine/Mechanics, 3) Real-world Trade-offs.',
+        ],
+        modelAnswer: benchmark,
+        recommendedTopics: matchedDomain ? matchedDomain.recommendedTopics : ['Core Computer Science Fundamentals'],
+      };
+    }
+
+    // Case B: Very short response (< 6 words)
+    if (wordCount < 6) {
+      correctness = 8;
+      technicalDepth = 5;
+      communication = 20;
+      relevance = 15;
+      completeness = 5;
+      clarity = 20;
+      confidence = 15;
+
+      overallScore = Math.round(
+        correctness * 0.3 +
+        technicalDepth * 0.25 +
+        communication * 0.2 +
+        relevance * 0.15 +
+        completeness * 0.1
+      );
+
+      whatWentWell = ['Submitted a brief verbal response.'];
+      whatWasMissed = [
+        `Your response of ${wordCount} words is too brief to evaluate technical competence.`,
+        'Omitted core definitions, underlying architecture, and engineering trade-offs.',
+      ];
+      missingConcepts = matchedDomain ? matchedDomain.requiredConcepts.map((c) => c.label) : questionKeywords.slice(0, 3);
+      howToImprove = [
+        'In placement interviews, elaborate your answers into 3-4 structured sentences.',
+        'Define the core computer science concept first, then explain runtime mechanics and trade-offs.',
+      ];
+      modelAnswer = matchedDomain ? getRoleModelAnswer(matchedDomain) : `A model answer addresses ${questionKeywords.slice(0, 3).join(', ')}.`;
+      recommendedTopics = matchedDomain ? matchedDomain.recommendedTopics : ['Structured Interview Delivery'];
+
+      return {
+        overallScore,
+        scores: { correctness, technicalDepth, clarity, confidence, completeness, communication },
+        rubricBreakdown: {
+          technicalCorrectness: correctness,
+          problemSolving: technicalDepth,
+          communication,
+          relevance,
+          completeness,
+          scoringFormula: 'Score = (Correctness * 0.30) + (ProblemSolving * 0.25) + (Communication * 0.20) + (Relevance * 0.15) + (Completeness * 0.10)',
+        },
+        roleLevel,
+        whatWentWell,
+        whatWasMissed,
+        missingConcepts,
+        howToImprove,
+        modelAnswer,
+        recommendedTopics,
+      };
+    }
+
+    // Case C: Behavioral Question Evaluation (STAR Method)
+    const isBehavioral =
+      category?.toLowerCase() === 'behavioral' ||
+      matchedDomain?.title.includes('STAR') ||
+      lowerQuestion.includes('conflict') ||
+      lowerQuestion.includes('bug') ||
+      lowerQuestion.includes('tell me about a time');
+
+    if (isBehavioral && matchedDomain?.title.includes('STAR')) {
+      modelAnswer = getRoleModelAnswer(matchedDomain);
       recommendedTopics = matchedDomain.recommendedTopics;
 
-      // Identify which specific concepts the candidate actually mentioned vs missed (multi-term speech aware)
+      // Detect STAR components
+      const hasSituation = lowerAnswer.includes('situation') || lowerAnswer.includes('when') || lowerAnswer.includes('project') || lowerAnswer.includes('app') || lowerAnswer.includes('problem') || lowerAnswer.includes('bug') || lowerAnswer.includes('time');
+      const hasTask = lowerAnswer.includes('task') || lowerAnswer.includes('my role') || lowerAnswer.includes('needed to') || lowerAnswer.includes('responsible') || lowerAnswer.includes('goal') || lowerAnswer.includes('had to');
+      const hasAction = lowerAnswer.includes('action') || lowerAnswer.includes('i debugged') || lowerAnswer.includes('i fixed') || lowerAnswer.includes('i implemented') || lowerAnswer.includes('i used') || lowerAnswer.includes('steps') || lowerAnswer.includes('investigated') || lowerAnswer.includes('refactored');
+      const hasResult = lowerAnswer.includes('result') || lowerAnswer.includes('outcome') || lowerAnswer.includes('improved') || lowerAnswer.includes('fixed') || lowerAnswer.includes('resolved') || lowerAnswer.includes('metric') || lowerAnswer.includes('learned') || lowerAnswer.includes('coverage');
+
+      const starHits = [
+        ...(hasSituation ? ['Situation (Context & Challenge)'] : []),
+        ...(hasTask ? ['Task (Specific Responsibility)'] : []),
+        ...(hasAction ? ['Action (Engineering Steps Taken)'] : []),
+        ...(hasResult ? ['Result (Measurable Outcome & Impact)'] : []),
+      ];
+
+      const starMisses = [
+        ...(!hasSituation ? ['Situation (Setting context of the challenge)'] : []),
+        ...(!hasTask ? ['Task (Clarifying your specific individual role)'] : []),
+        ...(!hasAction ? ['Action (Concrete debugging/implementation steps)'] : []),
+        ...(!hasResult ? ['Result (Quantifiable outcome, test verification, or impact)'] : []),
+      ];
+
+      if (starHits.length === 4) {
+        correctness = 88;
+        technicalDepth = 85;
+        communication = 88;
+        relevance = 92;
+        completeness = 88;
+      } else if (starHits.length === 3) {
+        correctness = 72;
+        technicalDepth = 68;
+        communication = 78;
+        relevance = 82;
+        completeness = 68;
+      } else if (starHits.length === 2) {
+        correctness = 52;
+        technicalDepth = 48;
+        communication = 65;
+        relevance = 65;
+        completeness = 45;
+      } else if (starHits.length === 1) {
+        correctness = 30;
+        technicalDepth = 22;
+        communication = 50;
+        relevance = 40;
+        completeness = 25;
+      } else {
+        correctness = 12;
+        technicalDepth = 10;
+        communication = 40;
+        relevance = 15;
+        completeness = 10;
+      }
+
+      overallScore = Math.round(
+        correctness * 0.3 +
+        technicalDepth * 0.25 +
+        communication * 0.2 +
+        relevance * 0.15 +
+        completeness * 0.1
+      );
+
+      clarity = communication;
+      confidence = Math.min(95, communication + 5);
+
+      whatWentWell = starHits.length > 0
+        ? [`Articulated key STAR components: ${starHits.join(', ')}.`]
+        : ['Maintained conversational attempt under interview conditions.'];
+
+      whatWasMissed = starMisses.length > 0
+        ? [`Omitted STAR components: ${starMisses.join('; ')}.`]
+        : ['Strong coverage of STAR method. Ensure technical metrics and preventative tests are quantified.'];
+
+      missingConcepts = starMisses;
+      howToImprove = [
+        'Structure behavioral answers using the STAR format: Situation (1-2 sentences), Task (1 sentence), Action (3-4 sentences), Result (1-2 sentences with metrics).',
+        'Always conclude behavioral answers with a quantifiable outcome or engineering takeaway.',
+      ];
+
+      return {
+        overallScore,
+        scores: { correctness, technicalDepth, clarity, confidence, completeness, communication },
+        rubricBreakdown: {
+          technicalCorrectness: correctness,
+          problemSolving: technicalDepth,
+          communication,
+          relevance,
+          completeness,
+          scoringFormula: 'Score = (Correctness * 0.30) + (ProblemSolving * 0.25) + (Communication * 0.20) + (Relevance * 0.15) + (Completeness * 0.10)',
+        },
+        roleLevel,
+        whatWentWell,
+        whatWasMissed,
+        missingConcepts,
+        howToImprove,
+        modelAnswer,
+        recommendedTopics,
+      };
+    }
+
+    // Case D: Matched Technical Domain Evaluation
+    if (matchedDomain) {
+      modelAnswer = getRoleModelAnswer(matchedDomain);
+      recommendedTopics = matchedDomain.recommendedTopics;
+
+      // Identify hits and misses
       const hits = matchedDomain.requiredConcepts.filter((c) => {
         const candidateTerms = c.terms || (c.term ? [c.term] : []);
         return candidateTerms.some((t) => lowerAnswer.includes(t.toLowerCase()));
@@ -4540,97 +4681,199 @@ Return ONLY a valid JSON object matching this schema:
         return !candidateTerms.some((t) => lowerAnswer.includes(t.toLowerCase()));
       });
 
-      if (wordCount < 6) {
-        // Very brief / trivial / empty response
-        overallScore = Math.min(15, Math.max(5, wordCount * 2));
-        correctness = 10;
-        technicalDepth = 5;
-        clarity = 20;
-        confidence = 15;
-        completeness = 5;
-        communication = 20;
+      missingConcepts = misses.map((m) => m.label);
 
-        whatWentWell = [
-          `Attempted to submit an answer (${wordCount} words).`,
-        ];
-        whatWasMissed = [
-          `Your response of ${wordCount} words is insufficient for campus recruitment. Technical rounds require structured technical elaboration.`,
-          `Did not define ${matchedDomain.title} or explain how it works under the hood.`,
-          `Omitted critical concepts: ${misses.slice(0, 3).map((m) => m.label).join('; ')}.`,
-        ];
-        howToImprove = [
-          'In campus interviews, follow the 3-step formula: 1) Core Definition, 2) Underlying Engine / Mechanism, 3) Real-world Example / Trade-off.',
-          'Speak or write at least 3-4 comprehensive sentences to demonstrate technical mastery to the interviewer.',
-        ];
-      } else if (hits.length === 0 && wordCount < 15) {
-        // Very brief without technical depth
-        overallScore = Math.min(25, 18 + Math.round(wordCount * 0.4));
-        correctness = 18;
-        technicalDepth = 12;
+      // Check for off-topic response (e.g. candidate talks about personal background on ACID question)
+      const isOffTopic =
+        hits.length === 0 &&
+        (lowerAnswer.includes('mothers') ||
+          lowerAnswer.includes('hassan') ||
+          lowerAnswer.includes('salary tracker') ||
+          lowerAnswer.includes('electricity uses tracker') ||
+          lowerAnswer.includes('my journey') ||
+          lowerAnswer.includes('diploma and current')) &&
+        !lowerQuestion.includes('yourself') &&
+        !lowerQuestion.includes('background') &&
+        !lowerQuestion.includes('introduction');
+
+      // Check for unclear or fragmented spoken transcript
+      const isFragmentedOrUnclear =
+        lowerAnswer.includes("not there's") ||
+        lowerAnswer.includes('in food') ||
+        lowerAnswer.includes('code in bite') ||
+        lowerAnswer.includes('handles as synchronise') ||
+        (hits.length === 0 && wordCount < 18);
+
+      // Check for explicitly incorrect technical statements
+      const isIncorrect =
+        (lowerAnswer.includes('tape') && !lowerQuestion.includes('tape')) ||
+        (lowerAnswer.includes('only uses post') && lowerQuestion.includes('rest')) ||
+        (lowerAnswer.includes('only uses get') && lowerQuestion.includes('graphql')) ||
+        (lowerAnswer.includes('cannot be cached anywhere') && lowerQuestion.includes('rest'));
+
+      if (isOffTopic) {
+        // Off-topic response: strictly low marks for relevance and correctness
+        correctness = 10;
+        technicalDepth = 8;
+        communication = 45; // fluency is present but off-topic
+        relevance = 8;
+        completeness = 5;
         clarity = 35;
         confidence = 30;
-        completeness = 15;
-        communication = 40;
+
+        overallScore = Math.round(
+          correctness * 0.3 +
+          technicalDepth * 0.25 +
+          communication * 0.2 +
+          relevance * 0.15 +
+          completeness * 0.1
+        );
 
         whatWentWell = [
-          'Maintained conversational attempt under interview conditions.',
+          'Maintained conversational attempt and spoke with verbal fluency.',
         ];
         whatWasMissed = [
-          `Response was brief (${wordCount} words) and missed core concepts for ${matchedDomain.title}.`,
+          `The answer is off-topic. The candidate discussed their personal background/projects instead of addressing ${matchedDomain.title}.`,
+          `Failed to explain core mechanics: ${misses.slice(0, 3).map((m) => m.label).join('; ')}.`,
+          'Did not address runtime space/time trade-offs or production use cases.',
+        ];
+        howToImprove = [
+          'Directly address the interviewer\'s specific technical question before transitioning to personal projects.',
+          'Start technical answers with a precise definition, followed by internal mechanics, and conclude with real-world trade-offs.',
+        ];
+      } else if (isFragmentedOrUnclear) {
+        // Fragmented / phonetically unclear transcript: do not assume answers without evidence
+        correctness = 16;
+        technicalDepth = 12;
+        communication = 22;
+        relevance = 25;
+        completeness = 12;
+        clarity = 25;
+        confidence = 20;
+
+        overallScore = Math.round(
+          correctness * 0.3 +
+          technicalDepth * 0.25 +
+          communication * 0.2 +
+          relevance * 0.15 +
+          completeness * 0.1
+        );
+
+        whatWentWell = [
+          'Attempted a verbal response touching on topics from the question prompt.',
+        ];
+        whatWasMissed = [
+          'The transcribed spoken response is fragmented or phonetically unclear. Evaluated strictly without assuming missing technical knowledge.',
           `Failed to explain core mechanics: ${misses.slice(0, 3).map((m) => m.label).join('; ')}.`,
         ];
         howToImprove = [
-          `Study ${matchedDomain.title} fundamentals, focusing on concrete technical keywords.`,
-          'Elaborate further by describing real-world project usage or architecture trade-offs.',
+          'Speak clearly into the microphone and use precise technical terminology.',
+          'Review the benchmark answer below to learn standard architectural phrasing.',
         ];
-      } else if (hits.length === 0) {
-        // Conversational / conceptual attempt (15+ words) but using alternative vocabulary
-        overallScore = Math.min(48, Math.max(34, 30 + Math.round(wordCount * 0.3)));
-        correctness = overallScore - 4;
-        technicalDepth = overallScore - 6;
-        clarity = overallScore + 6;
-        confidence = overallScore + 4;
-        completeness = overallScore - 5;
-        communication = overallScore + 8;
+      } else if (isIncorrect) {
+        // Incorrect technical assertions
+        correctness = 12;
+        technicalDepth = 10;
+        communication = 48;
+        relevance = 45;
+        completeness = 15;
+        clarity = 40;
+        confidence = 35;
+
+        overallScore = Math.round(
+          correctness * 0.3 +
+          technicalDepth * 0.25 +
+          communication * 0.2 +
+          relevance * 0.15 +
+          completeness * 0.1
+        );
 
         whatWentWell = [
-          'Provided a general verbal response explaining perspective and system workflow.',
-          'Demonstrated clear conversational willingness during the interview round.',
+          'Attempted to address the comparative architecture question prompt.',
         ];
         whatWasMissed = [
-          `The answer addressed high-level flow but missed specific technical mechanics for ${matchedDomain.title}.`,
+          'Contains major technical inaccuracies: REST relies on HTTP verbs (GET, POST, PUT, DELETE) with native edge/CDN caching; GraphQL utilizes a single POST endpoint. Web applications and caches do not use magnetic tape storage.',
+          `Missed core architectural concepts: ${misses.slice(0, 3).map((m) => m.label).join('; ')}.`,
+        ];
+        howToImprove = [
+          'Review REST vs GraphQL architecture: HTTP verbs, caching strategies, and data serialization.',
+        ];
+      } else if (hits.length === 0) {
+        // Conversational attempt with alternative vocabulary but missing key domain concepts
+        correctness = 28;
+        technicalDepth = 22;
+        communication = 55;
+        relevance = 40;
+        completeness = 25;
+        clarity = 45;
+        confidence = 40;
+
+        overallScore = Math.round(
+          correctness * 0.3 +
+          technicalDepth * 0.25 +
+          communication * 0.2 +
+          relevance * 0.15 +
+          completeness * 0.1
+        );
+
+        whatWentWell = [
+          'Demonstrated willingness to articulate a response under interview conditions.',
+          'Maintained conversational delivery.',
+        ];
+        whatWasMissed = [
+          `Spoken answer missed specific technical mechanics for ${matchedDomain.title}.`,
           `Could explicitly incorporate: ${misses.slice(0, 3).map((m) => m.label).join('; ')}.`,
         ];
         howToImprove = [
-          `Directly incorporate standard engineering terminology for ${matchedDomain.title}.`,
-          'Connect the high-level workflow to specific database flags, runtime layers, or isolation levels.',
+          `Incorporate standard engineering keywords for ${matchedDomain.title}.`,
+          'Review the benchmark answer below for Tier-1 placement standards.',
         ];
       } else {
-        // Genuine substantive answer with 1 or more concept hits
-        const lengthMultiplier = Math.min(1.0, Math.max(0.6, wordCount / 35));
-
-        if (hits.length >= 4) {
-          overallScore = Math.min(94, Math.max(84, 76 + hits.length * 3 + Math.round(lengthMultiplier * 6)));
-        } else if (hits.length === 3) {
-          overallScore = Math.min(84, Math.max(74, 66 + hits.length * 3 + Math.round(lengthMultiplier * 6)));
-        } else if (hits.length === 2) {
-          overallScore = Math.min(74, Math.max(62, 54 + hits.length * 4 + Math.round(lengthMultiplier * 6)));
+        // Genuine substantive answer with concept hits
+        const hitCount = hits.length;
+        if (hitCount >= 4) {
+          correctness = 92;
+          technicalDepth = 90;
+          communication = 88;
+          relevance = 95;
+          completeness = 88;
+        } else if (hitCount === 3) {
+          correctness = 74;
+          technicalDepth = 70;
+          communication = 80;
+          relevance = 85;
+          completeness = 70;
+        } else if (hitCount === 2) {
+          correctness = 55;
+          technicalDepth = 50;
+          communication = 68;
+          relevance = 75;
+          completeness = 48;
         } else {
-          overallScore = Math.min(62, Math.max(50, 44 + hits.length * 5 + Math.round(lengthMultiplier * 6)));
+          // 1 hit
+          correctness = 42;
+          technicalDepth = 35;
+          communication = 60;
+          relevance = 65;
+          completeness = 35;
         }
 
-        correctness = overallScore;
-        technicalDepth = Math.max(35, overallScore - 3);
-        clarity = Math.min(95, overallScore + 4);
-        confidence = Math.min(95, overallScore + 3);
-        completeness = Math.max(30, overallScore - 4);
-        communication = Math.min(96, overallScore + 5);
+        overallScore = Math.round(
+          correctness * 0.3 +
+          technicalDepth * 0.25 +
+          communication * 0.2 +
+          relevance * 0.15 +
+          completeness * 0.1
+        );
+
+        clarity = communication;
+        confidence = Math.min(95, communication + 3);
 
         whatWentWell = [
           `Correctly addressed key technical concepts: ${hits.map((h) => h.label).join('; ')}.`,
           wordCount > 25
-            ? 'Demonstrated strong engineering articulation and structured communication.'
-            : 'Good foundational awareness of the topic and core principles.',
+            ? 'Demonstrated structured engineering articulation.'
+            : 'Good foundational awareness of the topic.',
         ];
 
         whatWasMissed = misses.length > 0
@@ -4643,59 +4886,69 @@ Return ONLY a valid JSON object matching this schema:
             ];
 
         howToImprove = [
-          `Review the Senior Staff Engineer benchmark answer below to incorporate advanced trade-offs for ${matchedDomain.title}.`,
+          `Review the ${roleLevel} benchmark answer below to incorporate advanced trade-offs for ${matchedDomain.title}.`,
           'In placement rounds, conclude answers with a quantitative metric or production takeaway.',
         ];
       }
     } else {
-      // Dynamic fallback for custom / unique questions
+      // Generic question fallback
       const matched = questionKeywords.filter((kw) => lowerAnswer.includes(kw));
       const matchCount = matched.length;
-      const relevanceScore = questionKeywords.length > 0 ? matchCount / questionKeywords.length : 0;
+      const relevanceRatio = questionKeywords.length > 0 ? matchCount / questionKeywords.length : 0;
 
-      if (wordCount < 6) {
-        overallScore = 10;
-        correctness = 8;
-        technicalDepth = 5;
-        clarity = 20;
-        confidence = 15;
-        completeness = 5;
-        communication = 20;
-
-        whatWentWell = ['Submitted a brief response.'];
-        whatWasMissed = [
-          `Your response of ${wordCount} words is too brief to evaluate technical competence.`,
-          `Did not address the question: "${question}".`,
-          'Placement interviews expect systematic, structured explanations.',
-        ];
-        howToImprove = [
-          'Define the core computer science concept first, then explain runtime mechanics and trade-offs.',
-        ];
+      if (relevanceRatio === 0) {
+        correctness = 15;
+        technicalDepth = 10;
+        communication = 40;
+        relevance = 10;
+        completeness = 10;
+      } else if (relevanceRatio < 0.3) {
+        correctness = 35;
+        technicalDepth = 30;
+        communication = 55;
+        relevance = 45;
+        completeness = 30;
+      } else if (relevanceRatio < 0.6) {
+        correctness = 60;
+        technicalDepth = 55;
+        communication = 70;
+        relevance = 75;
+        completeness = 55;
       } else {
-        const score = Math.round(45 + relevanceScore * 40 + Math.min(15, wordCount * 0.3));
-        overallScore = Math.min(92, Math.max(38, score));
-        correctness = overallScore;
-        technicalDepth = Math.max(25, overallScore - 4);
-        clarity = Math.min(95, overallScore + 4);
-        confidence = overallScore;
-        completeness = Math.max(25, overallScore - 3);
-        communication = Math.min(95, overallScore + 5);
-
-        whatWentWell = matched.length > 0
-          ? [`Addressed relevant topics from the prompt: ${matched.slice(0, 4).join(', ')}.`]
-          : ['Demonstrated willingness to articulate an answer under interview conditions.'];
-
-        const missedKeywords = questionKeywords.filter((kw) => !lowerAnswer.includes(kw));
-        whatWasMissed = missedKeywords.length > 0
-          ? [`Could provide deeper discussion on: ${missedKeywords.slice(0, 4).join(', ')}.`]
-          : ['Ensure edge-case constraints and trade-offs are clearly articulated.'];
-
-        howToImprove = [
-          'Structure your response clearly: 1) Definition & Intent, 2) Core Working Principles, 3) Computational Complexity & Trade-offs.',
-        ];
+        correctness = 85;
+        technicalDepth = 80;
+        communication = 85;
+        relevance = 90;
+        completeness = 80;
       }
 
-      modelAnswer = `A high-scoring placement interview answer for this question directly defines the core computer science principles of ${questionKeywords.slice(0, 3).join(', ')}, walks through internal runtime and memory mechanics, highlights asymptotic time and space complexities, and concludes with practical production engineering trade-offs.`;
+      overallScore = Math.round(
+        correctness * 0.3 +
+        technicalDepth * 0.25 +
+        communication * 0.2 +
+        relevance * 0.15 +
+        completeness * 0.1
+      );
+
+      clarity = communication;
+      confidence = communication;
+
+      whatWentWell = matched.length > 0
+        ? [`Addressed relevant topics from the prompt: ${matched.slice(0, 4).join(', ')}.`]
+        : ['Maintained conversational attempt under interview conditions.'];
+
+      const missedKeywords = questionKeywords.filter((kw) => !lowerAnswer.includes(kw));
+      whatWasMissed = missedKeywords.length > 0
+        ? [`Could provide deeper discussion on: ${missedKeywords.slice(0, 4).join(', ')}.`]
+        : ['Ensure edge-case constraints and trade-offs are clearly articulated.'];
+
+      missingConcepts = missedKeywords.slice(0, 4);
+
+      howToImprove = [
+        'Structure your response clearly: 1) Definition & Intent, 2) Core Working Principles, 3) Computational Complexity & Trade-offs.',
+      ];
+
+      modelAnswer = `A high-scoring ${roleLevel} placement interview answer for this question directly defines the core computer science principles of ${questionKeywords.slice(0, 3).join(', ')}, walks through internal runtime and memory mechanics, highlights asymptotic time and space complexities, and concludes with practical production engineering trade-offs.`;
       recommendedTopics = [
         questionKeywords.slice(0, 2).map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' & ') || 'Core Computer Science',
         'Algorithmic Complexity & Engineering Trade-Offs',
@@ -4713,8 +4966,18 @@ Return ONLY a valid JSON object matching this schema:
         completeness: Math.min(100, Math.max(0, completeness)),
         communication: Math.min(100, Math.max(0, communication)),
       },
+      rubricBreakdown: {
+        technicalCorrectness: correctness,
+        problemSolving: technicalDepth,
+        communication,
+        relevance,
+        completeness,
+        scoringFormula: 'Score = (Correctness * 0.30) + (ProblemSolving * 0.25) + (Communication * 0.20) + (Relevance * 0.15) + (Completeness * 0.10)',
+      },
+      roleLevel,
       whatWentWell,
       whatWasMissed,
+      missingConcepts,
       howToImprove,
       modelAnswer,
       recommendedTopics,

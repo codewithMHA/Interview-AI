@@ -1,6 +1,7 @@
 import { createApp } from '../app.js';
 import { EventEmitter } from 'events';
 import express from 'express';
+import { AIService } from '../services/aiService.js';
 
 interface TestResult {
   suite: string;
@@ -640,6 +641,181 @@ export const runFullSystemVerification = async (): Promise<boolean> => {
     );
     if (res.status !== 400 || res.data.success) {
       throw new Error(`Expected status 400 for short text, got ${res.status}`);
+    }
+  });
+
+  // =========================================================================
+  // SUITE 10: AI MOCK EVALUATION PRECISION & SCORING RIGOR (10 Requirements)
+  // =========================================================================
+  console.log('\n📦 Suite 10: AI Mock Evaluation Precision, Archetypes & Scoring Rigor');
+
+  await runTest('Evaluation', '1. Correct technical answer receives high score (80-95%) with transparent formula', async () => {
+    const evalRes = AIService.fallbackAnswerEvaluation(
+      'What are the ACID properties in database management systems, and how do write-ahead logs (WAL) guarantee Atomicity and Durability?',
+      'ACID stands for Atomicity, Consistency, Isolation, and Durability. Atomicity guarantees all-or-nothing execution via rollback and write-ahead logs. Consistency maintains schema integrity and foreign keys. Isolation prevents dirty reads and concurrency anomalies using MVCC or two-phase locking. Durability ensures committed transactions survive power failures and crashes by writing changes to non-volatile WAL logs on disk before committing.',
+      'Technical',
+      'SDE-1'
+    );
+
+    if (evalRes.overallScore < 80 || evalRes.overallScore > 95) {
+      throw new Error(`Expected score between 80-95%, got ${evalRes.overallScore}`);
+    }
+    if (evalRes.scores.correctness < 85) {
+      throw new Error(`Expected correctness >= 85, got ${evalRes.scores.correctness}`);
+    }
+    if (!evalRes.rubricBreakdown || !evalRes.rubricBreakdown.scoringFormula) {
+      throw new Error('Missing transparent rubric breakdown or scoring formula');
+    }
+    const expectedCalc = Math.round(
+      evalRes.scores.correctness * 0.30 +
+      evalRes.scores.technicalDepth * 0.25 +
+      evalRes.scores.communication * 0.20 +
+      evalRes.rubricBreakdown.relevance * 0.15 +
+      evalRes.scores.completeness * 0.10
+    );
+    if (evalRes.overallScore !== expectedCalc) {
+      throw new Error(`Formula mismatch: overallScore ${evalRes.overallScore} !== calculated ${expectedCalc}`);
+    }
+  });
+
+  await runTest('Evaluation', '2. Partially correct answer receives balanced score (45-68%) with missing concepts flagged', async () => {
+    const evalRes = AIService.fallbackAnswerEvaluation(
+      'What are the ACID properties in database management systems, and how do write-ahead logs (WAL) guarantee Atomicity and Durability?',
+      'ACID properties are Atomicity and Durability where Atomicity rolls back changes if failure occurs and Durability writes logs so data is safe on disk.',
+      'Technical',
+      'SDE-1'
+    );
+
+    if (evalRes.overallScore < 45 || evalRes.overallScore > 68) {
+      throw new Error(`Expected partially correct score between 45-68%, got ${evalRes.overallScore}`);
+    }
+    if (!evalRes.whatWasMissed || evalRes.whatWasMissed.length === 0) {
+      throw new Error('Expected omissions to be detailed in whatWasMissed');
+    }
+    if (!evalRes.missingConcepts || evalRes.missingConcepts.length === 0) {
+      throw new Error('Expected missing concepts to be populated');
+    }
+  });
+
+  await runTest('Evaluation', '3. Incorrect technical answer receives low score (15-35%) and flags misconceptions', async () => {
+    const evalRes = AIService.fallbackAnswerEvaluation(
+      'Explain the difference between REST API and GraphQL specifications.',
+      'REST only uses POST requests and cannot be cached anywhere. GraphQL only uses GET requests and stores all data inside magnetic tape backups.',
+      'Technical',
+      'SDE-1'
+    );
+
+    if (evalRes.overallScore < 15 || evalRes.overallScore > 35) {
+      throw new Error(`Expected incorrect technical score between 15-35%, got ${evalRes.overallScore}`);
+    }
+    if (evalRes.scores.correctness > 40) {
+      throw new Error(`Expected correctness to be penalized, got ${evalRes.scores.correctness}`);
+    }
+  });
+
+  await runTest('Evaluation', '4. Irrelevant / off-topic answer strictly penalized (10-22%) without unearned marks', async () => {
+    // Exact user transcript where candidate introduced themselves when asked about database ACID & WAL
+    const evalRes = AIService.fallbackAnswerEvaluation(
+      'What are the ACID properties in database management systems, and how do write-ahead logs (WAL) guarantee Atomicity and Durability?',
+      'my name is mothers and Ahmed friend Computer Science and Engineering I have developed salary and electricity uses tracker I started my software journey through diploma and current',
+      'Technical',
+      'SDE-1'
+    );
+
+    if (evalRes.overallScore < 10 || evalRes.overallScore > 22) {
+      throw new Error(`Expected off-topic answer score between 10-22%, got ${evalRes.overallScore}`);
+    }
+    if (evalRes.rubricBreakdown && evalRes.rubricBreakdown.relevance > 15) {
+      throw new Error(`Expected relevance <= 15 for off-topic response, got ${evalRes.rubricBreakdown.relevance}`);
+    }
+    const offTopicNoted = evalRes.whatWasMissed.some((m) => m.toLowerCase().includes('off-topic') || m.toLowerCase().includes('personal background'));
+    if (!offTopicNoted) {
+      throw new Error('whatWasMissed must explicitly state that the response is off-topic');
+    }
+  });
+
+  await runTest('Evaluation', '5. Unclear / fragmented transcript evaluated strictly (10-22%) without assumed knowledge', async () => {
+    // Exact user transcript where speech-to-text had fragmented words
+    const evalRes = AIService.fallbackAnswerEvaluation(
+      'Let’s look at runtime internals. In your core stack (such as Node.js or Java), how does the runtime handle asynchronous non-blocking I/O, and what happens when the event loop or thread pool is exhausted by a CPU-heavy task?',
+      'runtime internals are not there\'s has connected to server with JavaScript runs the code in bite so that it can handles as synchronise non blocking in food',
+      'Technical',
+      'SDE-1'
+    );
+
+    if (evalRes.overallScore < 10 || evalRes.overallScore > 22) {
+      throw new Error(`Expected fragmented transcript score between 10-22%, got ${evalRes.overallScore}`);
+    }
+    const fragmentedNoted = evalRes.whatWasMissed.some((m) => m.toLowerCase().includes('fragmented') || m.toLowerCase().includes('unclear'));
+    if (!fragmentedNoted) {
+      throw new Error('whatWasMissed must note that the transcript is fragmented or unclear');
+    }
+  });
+
+  await runTest('Evaluation', '6. Behavioral question evaluated strictly via STAR framework (Situation, Task, Action, Result)', async () => {
+    const starAnswer =
+      'Situation: In my Salary Calculator web application, overtime computations caused calculation discrepancies for users across specific months. ' +
+      'Task: My responsibility was to isolate the bug and ensure accurate computations without breaking live users. ' +
+      'Action: I reproduced the failure using automated unit tests, discovered a floating-point rounding issue coupled with month index handling in JavaScript, and refactored the math using integer cents with validation guards. ' +
+      'Result: The bug was completely eradicated with 100% test coverage across all calendar fixtures, ensuring verified calculation accuracy.';
+
+    const evalRes = AIService.fallbackAnswerEvaluation(
+      'Tell me about a time you encountered a severe production bug or technical disagreement in a project and how you resolved it.',
+      starAnswer,
+      'Behavioral',
+      'SDE-1'
+    );
+
+    if (evalRes.overallScore < 80 || evalRes.overallScore > 95) {
+      throw new Error(`Expected complete STAR score between 80-95%, got ${evalRes.overallScore}`);
+    }
+    const articulatedSTAR = evalRes.whatWentWell.some((w) => w.toLowerCase().includes('star'));
+    if (!articulatedSTAR) {
+      throw new Error('whatWentWell must explicitly recognize the STAR components');
+    }
+  });
+
+  await runTest('Evaluation', '7. Role-based benchmark answers generated for SDE-1 vs Senior levels', async () => {
+    const sde1Eval = AIService.fallbackAnswerEvaluation(
+      'What are the ACID properties in database management systems, and how do write-ahead logs (WAL) guarantee Atomicity and Durability?',
+      '',
+      'Technical',
+      'SDE-1'
+    );
+    const seniorEval = AIService.fallbackAnswerEvaluation(
+      'What are the ACID properties in database management systems, and how do write-ahead logs (WAL) guarantee Atomicity and Durability?',
+      '',
+      'Technical',
+      'Senior Software Engineer'
+    );
+
+    if (sde1Eval.roleLevel !== 'SDE-1') {
+      throw new Error(`Expected roleLevel SDE-1, got ${sde1Eval.roleLevel}`);
+    }
+    if (seniorEval.roleLevel !== 'Senior Engineer') {
+      throw new Error(`Expected roleLevel Senior Engineer, got ${seniorEval.roleLevel}`);
+    }
+    if (!seniorEval.modelAnswer.includes('ARIES') && !seniorEval.modelAnswer.includes('consensus') && !seniorEval.modelAnswer.includes('Snapshot')) {
+      throw new Error('Senior model answer must include senior-level architecture concepts (ARIES/MVCC/consensus)');
+    }
+  });
+
+  await runTest('Evaluation', '8. Mock interview report uses updated terminology (Preparation Recommendation & Assessment Report)', async () => {
+    const historyRes = await makeRequest(app, 'GET', '/api/mock-interviews', undefined, authToken);
+    if (historyRes.status !== 200 || !Array.isArray(historyRes.data.data) || historyRes.data.data.length === 0) {
+      throw new Error('No interview sessions found to verify report terminology');
+    }
+
+    const testSessionId = historyRes.data.data[0]._id || historyRes.data.data[0].id;
+    const completeRes = await makeRequest(app, 'POST', `/api/mock-interviews/${testSessionId}/complete`, {}, authToken);
+    if (completeRes.status !== 200 || !completeRes.data.data?.report) {
+      throw new Error('Complete interview report failed');
+    }
+
+    const report = completeRes.data.data.report;
+    const prepLevel = report.recommendations?.preparationLevel || '';
+    if (!prepLevel.includes('Ready') && !prepLevel.includes('Recommended') && !prepLevel.includes('Revision') && !prepLevel.includes('Incomplete')) {
+      throw new Error(`Unexpected preparation level terminology: ${prepLevel}`);
     }
   });
 

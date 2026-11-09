@@ -236,6 +236,16 @@ export interface MockQuestionFeedback {
   howToImprove: string[];
   modelAnswer: string;
   recommendedTopics: string[];
+  rubricBreakdown?: {
+    technicalCorrectness: number;
+    problemSolving: number;
+    communication: number;
+    relevance: number;
+    completeness: number;
+    scoringFormula: string;
+  };
+  missingConcepts?: string[];
+  roleLevel?: string;
 }
 
 export interface MockInterviewQuestionItem {
