@@ -49,8 +49,14 @@ export const getAnalyticsDashboard = async (
 
       if (mongoose.Types.ObjectId.isValid(resolvedUserId)) {
         profile = await Profile.findOne({ user: resolvedUserId });
-        submissions = await Submission.find({ userId: resolvedUserId }).sort({ createdAt: -1 });
-        interviews = await MockInterview.find({ userId: resolvedUserId }).sort({ createdAt: -1 });
+        submissions = await Submission.find({ userId: resolvedUserId }).sort({ createdAt: -1 }).limit(200).lean();
+        interviews = await MockInterview.find(
+          { userId: resolvedUserId },
+          'role category interviewType status overallScore averageScores scores createdAt completedAt'
+        )
+          .sort({ createdAt: -1 })
+          .limit(100)
+          .lean();
         roadmapProgress = await UserRoadmapProgress.findOne({ userId: resolvedUserId }).sort({ lastActiveAt: -1 });
         
         const questionStatuses = await UserQuestionStatus.find({

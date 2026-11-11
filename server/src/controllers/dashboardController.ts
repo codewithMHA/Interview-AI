@@ -66,8 +66,14 @@ export const getDashboardOverview = async (
           user: resolvedUserId,
           isBookmarked: true,
         });
-        submissions = await Submission.find({ userId: resolvedUserId }).sort({ createdAt: -1 });
-        interviews = await MockInterview.find({ userId: resolvedUserId }).sort({ createdAt: -1 });
+        submissions = await Submission.find({ userId: resolvedUserId }).sort({ createdAt: -1 }).limit(200).lean();
+        interviews = await MockInterview.find(
+          { userId: resolvedUserId },
+          'role category interviewType status overallScore createdAt completedAt'
+        )
+          .sort({ createdAt: -1 })
+          .limit(100)
+          .lean();
         roadmapProgress = await UserRoadmapProgress.findOne({ userId: resolvedUserId }).sort({ lastActiveAt: -1 });
         allProblems = await CodingProblem.find({}, 'title slug category difficulty companies');
       } else {

@@ -93,8 +93,11 @@ export const startInterview = async (
       ];
     }
 
-    // Generate initial structured questions based on configuration and interview stages (with strict 2.5s race timeout)
-    const questionGenPromise = AIService.generateMockQuestions({
+    const safeResumeText =
+      typeof resumeText === 'string' ? resumeText.replace(/\0/g, '').slice(0, 6000) : '';
+
+    // Generate initial structured questions (AIService handles timeout + instant fallback cleanly)
+    const generatedQuestions = await AIService.generateMockQuestions({
       title: title || `${company ? company + ' ' : ''}${role} ${interviewType} Interview`,
       role,
       experienceLevel,
@@ -104,18 +107,10 @@ export const startInterview = async (
       type: interviewType === 'HR' ? 'HR' : interviewType === 'Behavioral' ? 'Behavioral' : 'Technical',
       questionCount: count,
       candidateSkills: skillsList,
-      resumeText: resumeText || '',
+      resumeText: safeResumeText,
       targetJD: jobDescription || '',
       roundType: interviewType.toLowerCase().replace(/\s+/g, '_'),
     });
-
-    const instantFallbackTimer = new Promise<any[]>((resolve) =>
-      setTimeout(() => {
-        resolve((AIService as any).fallbackMockQuestions(role, difficulty, interviewType, count));
-      }, 2500)
-    );
-
-    const generatedQuestions = await Promise.race([questionGenPromise, instantFallbackTimer]);
 
     // Assign stages (Stage 1: Intro, Stage 2: Main, Stage 3: Followup, Stage 4: Scenario, Stage 5: Wrapup)
     const stages: Array<'introduction' | 'main' | 'followup' | 'scenario' | 'wrapup'> = [
@@ -197,7 +192,7 @@ export const startInterview = async (
       currentStage: 'introduction',
       questions: questionsWithStages,
       codingProblem,
-      resumeText,
+      resumeText: safeResumeText,
       jobDescription,
       candidateNotes: '',
       resumeTopics: formattedTopics || [],
@@ -329,7 +324,7 @@ export const submitAnswer = async (
             role: interview.role,
             company: interview.company,
             roundType: interview.interviewType,
-            resumeText: interview.resumeText,
+            resumeText: (interview.resumeText || '').slice(0, 2500),
             questionNumber: qIndex + 2,
             totalQuestions: interview.questions.length,
             currentQuestion: targetQuestion.question,
@@ -390,7 +385,7 @@ export const submitAnswer = async (
       interview.status = 'completed';
       interview.currentStage = 'completed';
       interview.completedAt = new Date();
-      interviewerSpeech = `Thank you so much. That concludes all questions for our interview session today. I am generating your comprehensive hiring evaluation report now.`;
+      interviewerSpeech = `Thank you so much. That concludes all questions for our interview session today. I am generating your AI mock interview assessment report now.`;
 
       // Generate the complete performance report
       interview.report = generateComprehensiveReport(interview);
@@ -544,6 +539,7 @@ export const completeInterview = async (
     interview.overallScore = report.overallScore;
 
     if (isConnected) {
+      interview.markModified('questions');
       interview.markModified('report');
       await interview.save();
     } else {
@@ -620,9 +616,19 @@ export const getInterviewHistory = async (
 
     let interviews: any[] = [];
     if (isConnected) {
-      interviews = await MockInterview.find({
-        $or: [{ userId: resolvedUid }, { userId: authReq.user?.userId }],
-      }).sort({ createdAt: -1 });
+      const uidStr = authReq.user?.userId;
+      const query =
+        uidStr && uidStr !== resolvedUid
+          ? { $or: [{ userId: resolvedUid }, { userId: uidStr }] }
+          : { userId: resolvedUid };
+
+      interviews = await MockInterview.find(query)
+        .select(
+          '_id title role company interviewType difficulty experienceLevel status overallScore mode interviewerName duration numberOfQuestions createdAt startedAt completedAt averageScores'
+        )
+        .sort({ createdAt: -1 })
+        .limit(50)
+        .lean();
     } else {
       interviews = await devStore.getUserMockInterviews(resolvedUid);
     }

@@ -167,14 +167,30 @@ export class AIService {
   }
 
   /**
+   * Safely extracts and parses JSON returned by Gemini (even if wrapped in markdown fences).
+   */
+  private static extractJson(rawText: string): any {
+    const firstBrace = rawText.indexOf('{');
+    const lastBrace = rawText.lastIndexOf('}');
+    const jsonStr =
+      firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace
+        ? rawText.substring(firstBrace, lastBrace + 1)
+        : rawText.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
+    return JSON.parse(jsonStr);
+  }
+
+  /**
    * Helper to execute Gemini content generation with ultra-fast models, circuit breaker, and instant fallbacks.
    */
-  private static async generateContentWithFallback(prompt: string): Promise<string | null> {
+  private static async generateContentWithFallback(
+    prompt: string,
+    timeoutMs: number = 8000
+  ): Promise<string | null> {
     const client = this.getClient();
     if (!client) return null;
 
     // 1. Check Circuit Breaker: If cloud AI recently failed with 503 (Overloaded) or timed out,
-    // do NOT waste 5 seconds making the candidate wait. Instantly use our high-precision engine!
+    // do NOT waste seconds making the candidate wait. Instantly use our high-precision engine!
     const now = Date.now();
     if (now < this.cloudCircuitOpenUntil) {
       const remainingSeconds = Math.ceil((this.cloudCircuitOpenUntil - now) / 1000);
@@ -182,17 +198,18 @@ export class AIService {
       return null;
     }
 
-    // Try Google's ultra-fast flash models with a 6500ms budget to guarantee conversational responsiveness
     const candidateModels = [
       'gemini-3.5-flash-lite',
+      'gemini-2.5-flash',
       'gemini-3.8-flash',
     ];
 
     for (const model of candidateModels) {
+      let timerId: NodeJS.Timeout | undefined;
       try {
-        const timeoutPromise = new Promise<null>((_, reject) =>
-          setTimeout(() => reject(new Error('AI_TIMEOUT_EXCEEDED')), 3000)
-        );
+        const timeoutPromise = new Promise<null>((_, reject) => {
+          timerId = setTimeout(() => reject(new Error('AI_TIMEOUT_EXCEEDED')), timeoutMs);
+        });
 
         const generatePromise = client.models.generateContent({
           model,
@@ -203,12 +220,14 @@ export class AIService {
         });
 
         const response = (await Promise.race([generatePromise, timeoutPromise])) as any;
+        if (timerId) clearTimeout(timerId);
         if (response && response.text) {
           console.log(`[AIService] Successfully generated response using model: ${model}`);
           this.cloudCircuitOpenUntil = 0; // Success! Circuit is healthy
           return response.text;
         }
       } catch (err: any) {
+        if (timerId) clearTimeout(timerId);
         const isOverloadOrTimeout =
           err.message?.includes('503') ||
           err.message?.includes('high demand') ||
@@ -223,14 +242,18 @@ export class AIService {
           err.message?.includes('UNAUTHENTICATED');
 
         if (isOverloadOrTimeout) {
-          // Trip circuit breaker for 15 seconds so retry happens quickly
+          // Avoid duplicate interleaved logs when concurrent requests time out in the same tick
+          const wasCircuitClosed = Date.now() >= this.cloudCircuitOpenUntil;
           this.cloudCircuitOpenUntil = Date.now() + 15000;
-          let shortReason = err.message?.includes('503') || err.message?.includes('high demand')
-            ? 'Cloud AI model overloaded (503 High Demand)'
-            : err.message?.includes('AI_TIMEOUT_EXCEEDED')
-            ? 'Cloud AI timeout (>2200ms)'
-            : 'Cloud AI network unavailable';
-          console.log(`[AIService] ${shortReason}. Tripping Circuit Breaker for 15s. Using instant high-precision engine.`);
+          if (wasCircuitClosed) {
+            const shortReason =
+              err.message?.includes('503') || err.message?.includes('high demand')
+                ? 'Cloud AI model overloaded (503 High Demand)'
+                : err.message?.includes('AI_TIMEOUT_EXCEEDED')
+                ? `Cloud AI timeout (>${timeoutMs}ms)`
+                : 'Cloud AI network unavailable';
+            console.log(`[AIService] ${shortReason}. Tripping Circuit Breaker for 15s. Using instant high-precision engine.`);
+          }
           break; // Stop immediately; don't make user wait on secondary models
         } else {
           let shortMsg = err.message || '';
@@ -2318,11 +2341,6 @@ MANDATORY ROUND TYPE: ${(params.roundType || params.type).toUpperCase()} ROUND
 Difficulty Level: ${params.difficulty}
 Number of questions needed: ${count}
 Session Seed: ${Date.now()}_${Math.random().toString(36).substring(7)}
-${customFocus}
-MANDATORY ROUND TYPE: ${params.type.toUpperCase()} ROUND
-Difficulty Level: ${params.difficulty}
-Number of questions needed: ${count}
-Session Seed: ${Date.now()}_${Math.random().toString(36).substring(7)}
 
 CRITICAL TRACK RULES:
 ${isHR ? `
@@ -2495,10 +2513,10 @@ Return ONLY a valid JSON object matching this schema:
   "recommendedTopics": ["Specific Topic 1", "Topic 2"]
 }`;
 
-    const text = await this.generateContentWithFallback(prompt);
+    const text = await this.generateContentWithFallback(prompt, 7500);
     if (text) {
       try {
-        const parsed = JSON.parse(text);
+        const parsed = this.extractJson(text);
         const getNum = (val: any, fallback: number) =>
           typeof val === 'number' && !isNaN(val) ? Math.min(100, Math.max(0, val)) : fallback;
 
@@ -2621,10 +2639,10 @@ Return ONLY a valid JSON object matching this schema:
   "sampleFollowUp": "Optional follow-up probe"
 }`;
 
-    const text = await this.generateContentWithFallback(prompt);
+    const text = await this.generateContentWithFallback(prompt, 7500);
     if (text) {
       try {
-        const parsed = JSON.parse(text);
+        const parsed = this.extractJson(text);
         if (parsed.nextQuestion) {
           const leadIns = ['Hmm, okay.', 'Alright.', 'Understood.', 'I see.'];
           const cleanLeadIn = leadIns.some((l) => parsed.interviewerLeadIn?.includes(l.replace('.', '')))

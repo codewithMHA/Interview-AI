@@ -449,6 +449,7 @@ export const scanResume = async (
         const ai = new GoogleGenAI({ apiKey });
         const candidateModels = [
           'gemini-3.5-flash-lite',
+          'gemini-2.5-flash',
           'gemini-3.8-flash',
         ];
 
@@ -519,10 +520,11 @@ Return a strictly valid JSON response adhering to this exact schema (no markdown
         contents.push(prompt);
 
         for (const model of candidateModels) {
+          let timerId: NodeJS.Timeout | undefined;
           try {
-            const timeoutPromise = new Promise<null>((_, reject) =>
-              setTimeout(() => reject(new Error('AI_TIMEOUT_EXCEEDED')), 3000)
-            );
+            const timeoutPromise = new Promise<null>((_, reject) => {
+              timerId = setTimeout(() => reject(new Error('AI_TIMEOUT_EXCEEDED')), 8000);
+            });
             const generatePromise = ai.models.generateContent({
               model,
               contents,
@@ -533,6 +535,7 @@ Return a strictly valid JSON response adhering to this exact schema (no markdown
             });
 
             const result = (await Promise.race([generatePromise, timeoutPromise])) as any;
+            if (timerId) clearTimeout(timerId);
 
             if (result && result.text) {
               const cleaned = result.text
@@ -543,6 +546,7 @@ Return a strictly valid JSON response adhering to this exact schema (no markdown
               break;
             }
           } catch (modelErr: any) {
+            if (timerId) clearTimeout(timerId);
             const isNetworkOrAuthFailure =
               modelErr.message?.includes('fetch failed') ||
               modelErr.message?.includes('ENOTFOUND') ||

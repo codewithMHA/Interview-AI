@@ -23,6 +23,7 @@ import {
   ChevronDown
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
+import { MarkdownText } from '@/components/common/MarkdownText';
 import { sendChatMessage, solveDoubtWithAI, DoubtSolverResponse } from '@/services/aiService';
 
 interface ChatMessage {
@@ -404,7 +405,11 @@ export const PlacementAIChatWidget: React.FC = () => {
                         : 'bg-slate-100/90 dark:bg-slate-800/90 text-slate-800 dark:text-slate-100 rounded-bl-none border border-slate-200/60 dark:border-slate-750'
                     }`}
                   >
-                    <div className="whitespace-pre-wrap select-text">{msg.text}</div>
+                    <MarkdownText
+                      content={msg.text}
+                      invert={msg.sender === 'user'}
+                      className="select-text"
+                    />
 
                     {/* Key points bullets if any */}
                     {msg.keyPoints && msg.keyPoints.length > 0 && (
@@ -415,7 +420,7 @@ export const PlacementAIChatWidget: React.FC = () => {
                         {msg.keyPoints.map((kp, idx) => (
                           <div key={idx} className="flex items-start gap-1.5 text-xs text-slate-700 dark:text-slate-300">
                             <span className="w-1.5 h-1.5 rounded-full bg-brand-500 mt-1.5 shrink-0" />
-                            <span>{kp}</span>
+                            <MarkdownText content={kp} inline />
                           </div>
                         ))}
                       </div>
@@ -443,7 +448,7 @@ export const PlacementAIChatWidget: React.FC = () => {
                         </pre>
                         {msg.codeSnippet.explanation && (
                           <p className="px-3 py-1.5 bg-slate-900/60 text-[11px] text-slate-400 border-t border-slate-800/80">
-                            {msg.codeSnippet.explanation}
+                            <MarkdownText content={msg.codeSnippet.explanation} inline invert />
                           </p>
                         )}
                       </div>
@@ -454,7 +459,7 @@ export const PlacementAIChatWidget: React.FC = () => {
                       <div className="mt-2.5 p-2 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-700 dark:text-amber-300 text-[11px] flex items-start gap-1.5">
                         <Lightbulb className="w-3.5 h-3.5 shrink-0 mt-0.5 text-amber-500" />
                         <div>
-                          <strong>Interview Tip:</strong> {msg.interviewTip}
+                          <strong>Interview Tip:</strong> <MarkdownText content={msg.interviewTip} inline />
                         </div>
                       </div>
                     )}

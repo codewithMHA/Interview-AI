@@ -10,8 +10,18 @@ export interface IMockQuestionFeedback {
     completeness: number;
     communication: number;
   };
+  rubricBreakdown?: {
+    technicalCorrectness: number;
+    problemSolving: number;
+    communication: number;
+    relevance: number;
+    completeness: number;
+    scoringFormula: string;
+  };
+  roleLevel?: string;
   whatWentWell: string[];
   whatWasMissed: string[];
+  missingConcepts?: string[];
   howToImprove: string[];
   modelAnswer: string;
   recommendedTopics: string[];
@@ -73,7 +83,7 @@ export interface IInterviewReport {
     suggestedAnswer: string;
   }>;
   recommendations: {
-    preparationLevel: 'Beginner' | 'Intermediate' | 'Placement Ready' | 'Advanced';
+    preparationLevel: string;
     recommendedTopics: string[];
     suggestedNextInterview: string;
   };
@@ -137,8 +147,18 @@ const MockQuestionFeedbackSchema = new Schema<IMockQuestionFeedback>(
       completeness: { type: Number, default: 75 },
       communication: { type: Number, default: 75 },
     },
+    rubricBreakdown: {
+      technicalCorrectness: { type: Number },
+      problemSolving: { type: Number },
+      communication: { type: Number },
+      relevance: { type: Number },
+      completeness: { type: Number },
+      scoringFormula: { type: String },
+    },
+    roleLevel: { type: String },
     whatWentWell: { type: [String], default: [] },
     whatWasMissed: { type: [String], default: [] },
+    missingConcepts: { type: [String], default: [] },
     howToImprove: { type: [String], default: [] },
     modelAnswer: { type: String, default: '' },
     recommendedTopics: { type: [String], default: [] },

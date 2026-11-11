@@ -23,6 +23,7 @@ import {
 import { Button } from '@/components/common/Button';
 import { Badge } from '@/components/common/Badge';
 import { Card } from '@/components/common/Card';
+import { MarkdownText } from '@/components/common/MarkdownText';
 import {
   solveDoubtWithAI,
   DoubtSolverResponse,
@@ -424,7 +425,11 @@ export const AIChatPage: React.FC = () => {
                       : 'bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 rounded-bl-none border border-slate-200/80 dark:border-slate-800'
                   }`}
                 >
-                  <div className="whitespace-pre-wrap select-text leading-relaxed">{msg.text}</div>
+                  <MarkdownText
+                    content={msg.text}
+                    invert={msg.sender === 'user'}
+                    className="select-text leading-relaxed"
+                  />
 
                   {/* Key Takeaways */}
                   {msg.keyPoints && msg.keyPoints.length > 0 && (
@@ -435,7 +440,7 @@ export const AIChatPage: React.FC = () => {
                       {msg.keyPoints.map((kp, idx) => (
                         <div key={idx} className="flex items-start gap-2 text-xs text-slate-700 dark:text-slate-300">
                           <span className="w-1.5 h-1.5 rounded-full bg-brand-500 mt-1.5 shrink-0" />
-                          <span>{kp}</span>
+                          <MarkdownText content={kp} inline />
                         </div>
                       ))}
                     </div>
@@ -463,7 +468,7 @@ export const AIChatPage: React.FC = () => {
                       </pre>
                       {msg.codeSnippet.explanation && (
                         <p className="px-3.5 py-2 bg-slate-900/60 text-xs text-slate-400 border-t border-slate-800">
-                          {msg.codeSnippet.explanation}
+                          <MarkdownText content={msg.codeSnippet.explanation} inline invert />
                         </p>
                       )}
                     </div>
@@ -474,7 +479,7 @@ export const AIChatPage: React.FC = () => {
                     <div className="mt-3 p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/25 text-amber-800 dark:text-amber-300 text-xs flex items-start gap-2">
                       <Lightbulb className="w-4 h-4 shrink-0 mt-0.5 text-amber-500" />
                       <div>
-                        <strong>Pro Tip:</strong> {msg.interviewTip}
+                        <strong>Pro Tip:</strong> <MarkdownText content={msg.interviewTip} inline />
                       </div>
                     </div>
                   )}

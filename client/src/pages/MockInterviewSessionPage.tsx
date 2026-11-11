@@ -145,13 +145,19 @@ export const MockInterviewSessionPage: React.FC = () => {
 
   // Conversational State matching Photo 4 ("Connected · Interviewer speaking" / "Connected · Listening to you")
   const [conversationState, setConversationState] = useState<ConversationState>('connecting');
+  const conversationStateRef = useRef<ConversationState>('connecting');
   const [currentInterviewerCaption, setCurrentInterviewerCaption] = useState<string>('');
 
-  // Silence detection & fast auto-submit states
+  // Silence detection & auto-submit states (with acoustic mic guard so long answers are never cut off)
+  const [autoSendEnabled, setAutoSendEnabled] = useState<boolean>(true);
+  const autoSendEnabledRef = useRef<boolean>(true);
   const [pauseCountdown, setPauseCountdown] = useState<number | null>(null);
   const pauseIntervalRef = useRef<any>(null);
   const isSubmittingAnswerRef = useRef<boolean>(false);
   const lastSpokenTextSnapshotRef = useRef<string>('');
+  const lastVoiceActivityAtRef = useRef<number>(Date.now());
+  const lastTranscriptActivityAtRef = useRef<number>(Date.now());
+  const handleAutoProcessRef = useRef<() => void>(() => {});
 
   // Resume Topics (8 Cards from Photo 4)
   const [resumeTopics, setResumeTopics] = useState<ResumeTopicItem[]>([]);
@@ -175,6 +181,19 @@ export const MockInterviewSessionPage: React.FC = () => {
   const [isTranscriptOpen, setIsTranscriptOpen] = useState<boolean>(false);
   const [speechLang, setSpeechLang] = useState<'en-IN' | 'en-US'>('en-IN');
   const [isEditingSpokenAnswer, setIsEditingSpokenAnswer] = useState<boolean>(false);
+  const isEditingSpokenAnswerRef = useRef<boolean>(false);
+
+  useEffect(() => {
+    conversationStateRef.current = conversationState;
+  }, [conversationState]);
+
+  useEffect(() => {
+    isEditingSpokenAnswerRef.current = isEditingSpokenAnswer;
+  }, [isEditingSpokenAnswer]);
+
+  useEffect(() => {
+    autoSendEnabledRef.current = autoSendEnabled;
+  }, [autoSendEnabled]);
 
   // Candidate Camera State
   const [isCameraActive, setIsCameraActive] = useState<boolean>(true);
@@ -259,7 +278,13 @@ export const MockInterviewSessionPage: React.FC = () => {
           sum += dataArray[i];
         }
         const avg = sum / dataArray.length;
-        setMicVolumeLevel(Math.min(100, Math.round((avg / 128) * 100)));
+        const level = Math.min(100, Math.round((avg / 128) * 100));
+        setMicVolumeLevel(level);
+
+        // Acoustic VAD: While microphone picks up active speech, prevent auto-submit timer from advancing
+        if (level >= 6 && conversationStateRef.current === 'listening') {
+          lastVoiceActivityAtRef.current = Date.now();
+        }
 
         animFrameRef.current = requestAnimationFrame(updateVolume);
       };
@@ -301,24 +326,26 @@ export const MockInterviewSessionPage: React.FC = () => {
 
   // 4. Start & Stop Mic
   const startMicListening = useCallback(() => {
+    lastVoiceActivityAtRef.current = Date.now();
+    lastTranscriptActivityAtRef.current = Date.now();
+    isListeningMicRef.current = true;
+    setIsListeningMic(true);
+    startAudioVisualizer();
     if (!recognitionRef.current) return;
     try {
       recognitionRef.current.start();
-      isListeningMicRef.current = true;
-      setIsListeningMic(true);
-      startAudioVisualizer();
     } catch {}
   }, []);
 
   const stopMicListening = useCallback(() => {
     clearSilenceTimer();
+    isListeningMicRef.current = false;
+    setIsListeningMic(false);
     if (recognitionRef.current) {
       try {
         recognitionRef.current.stop();
       } catch {}
     }
-    isListeningMicRef.current = false;
-    setIsListeningMic(false);
     stopAudioVisualizer();
   }, [clearSilenceTimer]);
 
@@ -331,6 +358,7 @@ export const MockInterviewSessionPage: React.FC = () => {
 
     window.speechSynthesis.cancel();
     stopMicListening();
+    conversationStateRef.current = 'interviewer_speaking';
     setConversationState('interviewer_speaking');
     setCurrentInterviewerCaption(text);
 
@@ -348,17 +376,17 @@ export const MockInterviewSessionPage: React.FC = () => {
       utterance.voice = naturalVoice;
     }
 
-    utterance.onend = () => {
+    const handleSpeechDone = () => {
+      conversationStateRef.current = 'listening';
       setConversationState('listening');
+      lastVoiceActivityAtRef.current = Date.now();
+      lastTranscriptActivityAtRef.current = Date.now();
       startMicListening();
       if (onEndCallback) onEndCallback();
     };
 
-    utterance.onerror = () => {
-      setConversationState('listening');
-      startMicListening();
-      if (onEndCallback) onEndCallback();
-    };
+    utterance.onend = handleSpeechDone;
+    utterance.onerror = handleSpeechDone;
 
     window.speechSynthesis.speak(utterance);
   }, [startMicListening, stopMicListening]);
@@ -401,9 +429,12 @@ export const MockInterviewSessionPage: React.FC = () => {
     const currentQ = session.questions[currentQuestionIndex];
     if (!currentQ) return;
 
-    // A. CLARIFICATION & REPEAT INTENT DETECTION (e.g., "wait once again", "repeat please", "could you repeat")
-    const repeatRegex = /\b(wait\s*once\s*again|once\s*again|repeat|repeat\s*the\s*question|say\s*(that\s*)?again|speak\s*again|pardon|didn'?t\s*hear|didn'?t\s*catch|what\s*did\s*you\s*say|could\s*you\s*repeat|can\s*you\s*repeat|say\s*it\s*again)\b/i;
-    if (repeatRegex.test(spoken)) {
+    const words = spoken.split(/\s+/).filter((w) => w.length > 1);
+    const isShortVoiceCommand = words.length <= 12;
+
+    // A. CLARIFICATION & REPEAT INTENT DETECTION (only for short direct requests, never mid-answer)
+    const repeatRegex = /\b(wait\s*once\s*again|once\s*again|repeat\s*(the\s*)?question|repeat\s*please|say\s*(that|it)\s*again|speak\s*again|pardon\s*me|didn'?t\s*hear|didn'?t\s*catch|what\s*did\s*you\s*say|could\s*you\s*repeat|can\s*you\s*repeat)\b/i;
+    if (isShortVoiceCommand && repeatRegex.test(spoken)) {
       setUserSpokenAnswer('');
       setInterimTranscript('');
       latestSpokenAnswerRef.current = '';
@@ -424,9 +455,9 @@ export const MockInterviewSessionPage: React.FC = () => {
       return;
     }
 
-    // B. PAUSE / THINKING INTENT DETECTION (e.g., "wait a minute", "give me a moment", "let me think")
-    const pauseRegex = /\b(wait\s*(a\s*(minute|moment|second|bit)|one\s*(second|moment|minute))?|hold\s*on|give\s*me\s*a\s*(moment|minute|second)|let\s*me\s*think|just\s*a\s*(moment|minute|second)|take\s*a\s*minute)\b/i;
-    if (pauseRegex.test(spoken)) {
+    // B. PAUSE / THINKING INTENT DETECTION (only for short direct requests, never technical phrasing like "wait for lock")
+    const pauseRegex = /\b(wait\s+(a\s+(minute|moment|second|bit)|one\s+(second|moment|minute)|please)|hold\s*on(\s*a\s*(second|moment|minute))?|give\s*me\s*a\s*(moment|minute|second)|let\s*me\s*think|just\s*a\s*(moment|minute|second)|take\s*a\s*minute)\b/i;
+    if (isShortVoiceCommand && pauseRegex.test(spoken)) {
       setUserSpokenAnswer('');
       setInterimTranscript('');
       latestSpokenAnswerRef.current = '';
@@ -449,12 +480,12 @@ export const MockInterviewSessionPage: React.FC = () => {
     }
 
     // C. MINIMUM MEANINGFUL CONTENT GUARD (Ignore accidental 1-2 words like "ok", "yes", "uh", "hmm")
-    const words = spoken.split(/\s+/).filter((w) => w.length > 1);
     if (words.length < 3) {
       return;
     }
 
     isSubmittingAnswerRef.current = true;
+    conversationStateRef.current = 'evaluating';
     setConversationState('evaluating');
     stopMicListening();
 
@@ -521,13 +552,15 @@ export const MockInterviewSessionPage: React.FC = () => {
         // Complete interview session naturally
         const closing =
           result?.interviewerSpeech ||
-          `Thank you ${candidateName}. That gives me a thorough understanding of your technical background and projects. I am preparing your performance evaluation report now.`;
+          `Thank you ${candidateName}. That gives me a thorough understanding of your technical background and projects. I am preparing your assessment report now.`;
         speakInterviewerSpeech(closing, () => {
           handleEndSession();
         });
       }
     } catch (err) {
       console.error('Error in conversation step:', err);
+      conversationStateRef.current = 'listening';
+      setConversationState('listening');
       startMicListening();
     } finally {
       isSubmittingAnswerRef.current = false;
@@ -535,7 +568,7 @@ export const MockInterviewSessionPage: React.FC = () => {
   }, [
     session,
     id,
-    user,
+    candidateName,
     currentQuestionIndex,
     clearSilenceTimer,
     stopMicListening,
@@ -543,7 +576,13 @@ export const MockInterviewSessionPage: React.FC = () => {
     speakInterviewerSpeech,
   ]);
 
-  // 7. Initialize Speech Recognition with Natural Turn-Taking
+  useEffect(() => {
+    handleAutoProcessRef.current = () => {
+      handleAutoProcessCandidateAnswer();
+    };
+  }, [handleAutoProcessCandidateAnswer]);
+
+  // 7. Initialize Speech Recognition cleanly (not torn down between questions)
   useEffect(() => {
     const SpeechRecognition =
       (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
@@ -557,6 +596,16 @@ export const MockInterviewSessionPage: React.FC = () => {
     recognition.lang = speechLang;
 
     recognition.onresult = (event: any) => {
+      // Drop late buffered STT events while interviewer is speaking, evaluating, or editing
+      if (
+        !isListeningMicRef.current ||
+        conversationStateRef.current !== 'listening' ||
+        isSubmittingAnswerRef.current ||
+        isEditingSpokenAnswerRef.current
+      ) {
+        return;
+      }
+
       let interim = '';
       let final = '';
 
@@ -570,56 +619,43 @@ export const MockInterviewSessionPage: React.FC = () => {
 
       if (final.trim()) {
         const cleanedFinal = sanitizeSpokenTranscript(final.trim(), candidateName);
-        setUserSpokenAnswer((prev) => {
-          const updated = prev ? `${prev} ${cleanedFinal}` : cleanedFinal;
-          latestSpokenAnswerRef.current = updated;
-          return updated;
-        });
+        const updatedFinal = latestSpokenAnswerRef.current
+          ? `${latestSpokenAnswerRef.current} ${cleanedFinal}`
+          : cleanedFinal;
+        latestSpokenAnswerRef.current = updatedFinal;
+        setUserSpokenAnswer(updatedFinal);
       }
+
       const cleanedInterim = sanitizeSpokenTranscript(interim, candidateName);
       latestInterimRef.current = cleanedInterim;
       setInterimTranscript(cleanedInterim);
 
       const currentFullText = (latestSpokenAnswerRef.current + ' ' + cleanedInterim).trim();
-      const wordCount = currentFullText.split(/\s+/).filter(Boolean).length;
-
-      // Smart silence detection: only reset and re-arm timer when NEW speech content arrives
       if (currentFullText !== lastSpokenTextSnapshotRef.current) {
         lastSpokenTextSnapshotRef.current = currentFullText;
-        clearSilenceTimer();
-
-        if (wordCount >= 2) {
-          setPauseCountdown(5);
-          pauseIntervalRef.current = setInterval(() => {
-            setPauseCountdown((prev) => {
-              if (prev === null || prev <= 1) {
-                if (pauseIntervalRef.current) clearInterval(pauseIntervalRef.current);
-                return null;
-              }
-              return prev - 1;
-            });
-          }, 1000);
-
-          silenceTimerRef.current = setTimeout(() => {
-            handleAutoProcessCandidateAnswer();
-          }, 5500); // 5.5s generous natural silence
-        }
+        lastTranscriptActivityAtRef.current = Date.now();
+        lastVoiceActivityAtRef.current = Date.now();
       }
     };
 
     recognition.onspeechend = () => {
-      // In professional interviews, speech end indicates natural pause or clause transition;
-      // Do NOT abruptly cut the candidate off after 1.2s! The 5.5s silenceTimerRef comfortably manages natural turn-taking.
+      // Do NOT cut off on brief speech pauses; the acoustic + transcript silence monitor manages turn-taking.
     };
 
     recognition.onerror = (e: any) => {
-      console.warn('Speech recognition notice:', e?.error);
+      if (e?.error !== 'no-speech' && e?.error !== 'aborted') {
+        console.warn('Speech recognition notice:', e?.error);
+      }
     };
 
     recognition.onend = () => {
-      if (isListeningMicRef.current) {
+      if (isListeningMicRef.current && conversationStateRef.current === 'listening') {
         setTimeout(() => {
-          if (isListeningMicRef.current && recognitionRef.current) {
+          if (
+            isListeningMicRef.current &&
+            conversationStateRef.current === 'listening' &&
+            recognitionRef.current
+          ) {
             try {
               recognitionRef.current.start();
             } catch {}
@@ -635,7 +671,65 @@ export const MockInterviewSessionPage: React.FC = () => {
         recognition.stop();
       } catch {}
     };
-  }, [clearSilenceTimer, handleAutoProcessCandidateAnswer, speechLang, candidateName]);
+  }, [speechLang, candidateName]);
+
+  // 7b. Acoustic + Transcript Silence Monitor (Never cuts off active long-answer speakers)
+  useEffect(() => {
+    if (
+      conversationState !== 'listening' ||
+      !isListeningMic ||
+      !autoSendEnabled ||
+      isEditingSpokenAnswer
+    ) {
+      setPauseCountdown(null);
+      return;
+    }
+
+    const monitor = setInterval(() => {
+      if (
+        !autoSendEnabledRef.current ||
+        !isListeningMicRef.current ||
+        conversationStateRef.current !== 'listening' ||
+        isSubmittingAnswerRef.current ||
+        isEditingSpokenAnswerRef.current
+      ) {
+        setPauseCountdown(null);
+        return;
+      }
+
+      const combined = (latestSpokenAnswerRef.current + ' ' + latestInterimRef.current).trim();
+      const words = combined.split(/\s+/).filter((w) => w.length > 1);
+      if (words.length < 3) {
+        setPauseCountdown(null);
+        return;
+      }
+
+      const lastActivityAt = Math.max(
+        lastVoiceActivityAtRef.current,
+        lastTranscriptActivityAtRef.current
+      );
+      const silentMs = Date.now() - lastActivityAt;
+
+      // Require >= 4.0s of true simultaneous mic + transcript silence before showing countdown,
+      // and give generous extra breathing time for long (>25 words) multi-sentence explanations.
+      if (silentMs < 4000) {
+        setPauseCountdown(null);
+        return;
+      }
+
+      const totalSilenceBudgetMs = words.length >= 25 ? 12000 : 10000;
+      const remainingSec = Math.ceil((totalSilenceBudgetMs - silentMs) / 1000);
+
+      if (remainingSec <= 0) {
+        setPauseCountdown(null);
+        handleAutoProcessRef.current();
+      } else {
+        setPauseCountdown(remainingSec);
+      }
+    }, 500);
+
+    return () => clearInterval(monitor);
+  }, [conversationState, isListeningMic, autoSendEnabled, isEditingSpokenAnswer]);
 
   // 8. Countdown Timer (44:53)
   useEffect(() => {
@@ -658,14 +752,16 @@ export const MockInterviewSessionPage: React.FC = () => {
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
-  // 9. Load Session & Start Call Immediately
+  // 9. Load Session & Start Call Immediately (guarded against StrictMode double-load)
   useEffect(() => {
     if (!id) return;
+    let cancelled = false;
 
     const loadSession = async () => {
       setIsLoading(true);
       try {
         const data = await getMockInterview(id);
+        if (cancelled) return;
         setSession(data);
 
         // Initialize 8 Resume Topics from Photo 4
@@ -685,8 +781,7 @@ export const MockInterviewSessionPage: React.FC = () => {
         }
 
         // Initialize First Interview Greeting from Emily Zhou
-        const firstQ = data.questions?.[0];
-        const greeting = `Hi ${candidateName}, welcome to your Amazon SDE-1 interview. I'm Emily Zhou. I've reviewed your resume and project background. Let's start with a brief overview: tell me about yourself and your journey in software development.`;
+        const greeting = `Hi ${candidateName}, welcome to your ${data.company || 'Amazon'} ${data.role || 'SDE-1'} interview. I'm ${data.interviewerName || 'Emily Zhou'}. I've reviewed your resume and project background. Let's start with a brief overview: tell me about yourself and your journey in software development.`;
 
         setTranscriptMessages([
           {
@@ -698,15 +793,26 @@ export const MockInterviewSessionPage: React.FC = () => {
 
         speakInterviewerSpeech(greeting);
       } catch (err: any) {
-        console.error('Failed to load session:', err);
-        setErrorMessage('Could not load interview session details.');
+        if (!cancelled) {
+          console.error('Failed to load session:', err);
+          setErrorMessage('Could not load interview session details.');
+        }
       } finally {
-        setIsLoading(false);
+        if (!cancelled) {
+          setIsLoading(false);
+        }
       }
     };
 
     loadSession();
-  }, [id, user, speakInterviewerSpeech]);
+
+    return () => {
+      cancelled = true;
+      window.speechSynthesis?.cancel();
+      clearSilenceTimer();
+      stopMicListening();
+    };
+  }, [id]);
 
   // 10. Complete Interview & Navigate to Report
   const handleEndSession = async () => {
@@ -1081,9 +1187,9 @@ export const MockInterviewSessionPage: React.FC = () => {
             </div>
           </div>
 
-          {/* Current Spoken Transcript Streaming Preview with Instant "Done Speaking" Action & Quick Edit */}
+          {/* Current Spoken Transcript Streaming Preview with Instant "Done Speaking" Action, Auto-Send Toggle & Quick Edit */}
           <div className="p-3 rounded-xl bg-slate-900/60 border border-slate-800 text-[11px] space-y-2">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between flex-wrap gap-1.5">
               <div className="flex items-center gap-1.5">
                 <span className="text-[10px] font-bold uppercase text-slate-400 block">
                   Live Voice Feed
@@ -1096,6 +1202,33 @@ export const MockInterviewSessionPage: React.FC = () => {
                   title="Click to toggle speech recognition accent"
                 >
                   {speechLang === 'en-IN' ? '🇮🇳 en-IN' : '🇺🇸 en-US'}
+                </button>
+                {/* Auto-send on long silence toggle so candidate has complete control during long explanations */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAutoSendEnabled((prev) => {
+                      const next = !prev;
+                      if (!next) setPauseCountdown(null);
+                      else {
+                        lastVoiceActivityAtRef.current = Date.now();
+                        lastTranscriptActivityAtRef.current = Date.now();
+                      }
+                      return next;
+                    });
+                  }}
+                  className={`px-1.5 py-0.5 rounded text-[9px] font-bold border transition-colors cursor-pointer ${
+                    autoSendEnabled
+                      ? 'bg-amber-500/15 text-amber-300 border-amber-500/40 hover:bg-amber-500/25'
+                      : 'bg-slate-800 text-slate-400 border-slate-700 hover:text-white'
+                  }`}
+                  title={
+                    autoSendEnabled
+                      ? 'Auto-submits after extended silence. Click to switch to Manual Submit Only.'
+                      : 'Manual mode: speak as long as you want and click Done Speaking when finished.'
+                  }
+                >
+                  {autoSendEnabled ? 'Auto-send: ON' : 'Manual Only'}
                 </button>
               </div>
 
@@ -1114,9 +1247,23 @@ export const MockInterviewSessionPage: React.FC = () => {
                   </button>
                 )}
                 {pauseCountdown !== null && pauseCountdown > 0 && !isEditingSpokenAnswer && (
-                  <span className="text-[10px] font-bold text-amber-400 animate-pulse">
-                    Auto-sending in {pauseCountdown}s...
-                  </span>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[10px] font-bold text-amber-400 animate-pulse">
+                      Auto-sending in {pauseCountdown}s...
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        lastVoiceActivityAtRef.current = Date.now() + 8000;
+                        lastTranscriptActivityAtRef.current = Date.now() + 8000;
+                        setPauseCountdown(null);
+                      }}
+                      className="px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-[9px] font-bold text-emerald-400 border border-emerald-500/40 cursor-pointer"
+                      title="Delay auto-submit and keep speaking"
+                    >
+                      ✋ Wait
+                    </button>
+                  </div>
                 )}
               </div>
             </div>

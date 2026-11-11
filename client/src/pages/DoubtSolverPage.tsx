@@ -32,6 +32,7 @@ import {
 import { Button } from '@/components/common/Button';
 import { Card, CardContent } from '@/components/common/Card';
 import { Badge } from '@/components/common/Badge';
+import { MarkdownText } from '@/components/common/MarkdownText';
 
 interface Message {
   id: string;
@@ -186,7 +187,8 @@ export const DoubtSolverPage: React.FC = () => {
     }
 
     window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(text);
+    const speechFriendlyText = text.replace(/[*#`_~]/g, ' ').replace(/\s+/g, ' ').trim();
+    const utterance = new SpeechSynthesisUtterance(speechFriendlyText);
     utterance.rate = 1.0;
     utterance.pitch = 1.0;
     utterance.onend = () => setSpeakingMessageId(null);
@@ -443,9 +445,11 @@ export const DoubtSolverPage: React.FC = () => {
                     )}
 
                     {/* Direct Text Answer */}
-                    <div className="leading-relaxed whitespace-pre-line font-normal">
-                      {msg.text}
-                    </div>
+                    <MarkdownText
+                      content={msg.text}
+                      invert={isUser}
+                      className="leading-relaxed font-normal select-text"
+                    />
 
                     {/* Rich Structured Data (if AI answered a technical doubt) */}
                     {msg.data && (
@@ -458,7 +462,9 @@ export const DoubtSolverPage: React.FC = () => {
                             </span>
                             <ul className="space-y-1 text-xs text-slate-700 dark:text-slate-300 list-disc pl-4">
                               {msg.data.keyPoints.map((point, idx) => (
-                                <li key={idx} className="leading-relaxed">{point}</li>
+                                <li key={idx} className="leading-relaxed">
+                                  <MarkdownText content={point} inline />
+                                </li>
                               ))}
                             </ul>
                           </div>
@@ -491,7 +497,7 @@ export const DoubtSolverPage: React.FC = () => {
                             </div>
                             {msg.data.codeSnippet.explanation && (
                               <p className="text-[11px] text-slate-500 dark:text-slate-400 italic">
-                                {msg.data.codeSnippet.explanation}
+                                <MarkdownText content={msg.data.codeSnippet.explanation} inline />
                               </p>
                             )}
                           </div>
@@ -504,7 +510,7 @@ export const DoubtSolverPage: React.FC = () => {
                               <Lightbulb className="w-3.5 h-3.5" /> Senior Interviewer / Placement Tip
                             </span>
                             <p className="text-xs text-slate-700 dark:text-slate-300 leading-relaxed">
-                              {msg.data.interviewTip}
+                              <MarkdownText content={msg.data.interviewTip} inline />
                             </p>
                           </div>
                         )}

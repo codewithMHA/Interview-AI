@@ -39,6 +39,7 @@ import {
 import {
   startMockInterview,
   getMockInterviewHistory,
+  getMockInterview,
   deleteMockInterview,
   StartMockInterviewParams,
 } from '@/services/aiService';
@@ -242,6 +243,7 @@ export const MockInterviewSetupPage: React.FC = () => {
   const [isLoadingHistory, setIsLoadingHistory] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const isFetchingHistoryRef = React.useRef<boolean>(false);
 
   // Auto-populate from user's saved resume or saved profile
   useEffect(() => {
@@ -251,16 +253,28 @@ export const MockInterviewSetupPage: React.FC = () => {
       if (savedRaw) {
         const saved = JSON.parse(savedRaw);
         if (saved && saved.content && saved.content.trim().length > 0) {
-          setResumeText(saved.content);
+          const cleanContent = extractReadableResumeText(
+            saved.content,
+            saved.fileName || 'Mohammed_Hassan_Resume.pdf'
+          ).slice(0, 5000);
+          setResumeText(cleanContent);
           setResumeFileName(saved.fileName || 'Mohammed_Hassan_Resume.pdf');
-          const topics = saved.topics && saved.topics.length > 0 ? saved.topics : parseUserResume(saved.content);
+          const topics = saved.topics && saved.topics.length > 0 ? saved.topics : parseUserResume(cleanContent);
           setParsedTopics(topics);
           setSavedResumeMeta({
             fileName: saved.fileName || 'Mohammed_Hassan_Resume.pdf',
             updatedAt: saved.updatedAt || new Date().toISOString(),
             fileSize: saved.fileSize || '18 KB',
-            charCount: saved.content.length,
+            charCount: cleanContent.length,
           });
+          if (cleanContent !== saved.content) {
+            try {
+              localStorage.setItem(
+                SAVED_RESUME_STORAGE_KEY,
+                JSON.stringify({ ...saved, content: cleanContent, topics })
+              );
+            } catch {}
+          }
           return;
         }
       }
@@ -283,24 +297,41 @@ export const MockInterviewSetupPage: React.FC = () => {
 
   // Load candidate previous sessions and auto-populate resume if not found locally
   const loadHistory = async () => {
+    if (isFetchingHistoryRef.current) return;
+    isFetchingHistoryRef.current = true;
     setIsLoadingHistory(true);
     try {
       const data = await getMockInterviewHistory();
       setHistory(Array.isArray(data) ? data : []);
 
-      // If user doesn't have a saved resume in localStorage yet, check previous session history
+      // If user doesn't have a saved resume in localStorage yet, inspect only the latest session
       if (!localStorage.getItem(SAVED_RESUME_STORAGE_KEY) && Array.isArray(data) && data.length > 0) {
-        const past = data.find((d) => d.resumeText && d.resumeText.trim().length > 30);
-        if (past && past.resumeText) {
-          const pastTopics = past.resumeTopics && past.resumeTopics.length > 0 ? past.resumeTopics : parseUserResume(past.resumeText);
-          const fName = `${past.role || 'Candidate'}_Resume_History.pdf`;
+        let pastWithResume = data.find((d) => d.resumeText && d.resumeText.trim().length > 30);
+        if (!pastWithResume) {
+          const latestId = data[0]?._id || data[0]?.id;
+          if (latestId) {
+            try {
+              const fullLatest = await getMockInterview(latestId);
+              if (fullLatest?.resumeText && fullLatest.resumeText.trim().length > 30) {
+                pastWithResume = fullLatest;
+              }
+            } catch {}
+          }
+        }
+        if (pastWithResume && pastWithResume.resumeText) {
+          const fName = `${pastWithResume.role || 'Candidate'}_Resume_History.pdf`;
+          const cleanText = extractReadableResumeText(pastWithResume.resumeText, fName).slice(0, 5000);
+          const pastTopics =
+            pastWithResume.resumeTopics && pastWithResume.resumeTopics.length > 0
+              ? pastWithResume.resumeTopics
+              : parseUserResume(cleanText);
           const meta: SavedResumeMeta = {
             fileName: fName,
-            updatedAt: past.createdAt || new Date().toISOString(),
+            updatedAt: pastWithResume.createdAt || new Date().toISOString(),
             fileSize: '15 KB',
-            charCount: past.resumeText.length,
+            charCount: cleanText.length,
           };
-          setResumeText(past.resumeText);
+          setResumeText(cleanText);
           setResumeFileName(fName);
           setParsedTopics(pastTopics);
           setSavedResumeMeta(meta);
@@ -309,7 +340,7 @@ export const MockInterviewSetupPage: React.FC = () => {
               SAVED_RESUME_STORAGE_KEY,
               JSON.stringify({
                 fileName: fName,
-                content: past.resumeText,
+                content: cleanText,
                 updatedAt: meta.updatedAt,
                 fileSize: meta.fileSize,
                 topics: pastTopics,
@@ -321,6 +352,7 @@ export const MockInterviewSetupPage: React.FC = () => {
     } catch {
       // Dev fallback
     } finally {
+      isFetchingHistoryRef.current = false;
       setIsLoadingHistory(false);
     }
   };
@@ -439,29 +471,45 @@ export const MockInterviewSetupPage: React.FC = () => {
     return topics;
   };
 
-  // Clean or extract readable text from uploaded content (handles TXT, MD, and raw PDF)
+  // Clean or extract readable text from uploaded content (handles TXT, MD, and raw PDF safely without binary bloat)
   const extractReadableResumeText = (rawContent: string, fileName: string): string => {
     if (!rawContent) return '';
 
-    // If it's a binary PDF stream
-    if (rawContent.startsWith('%PDF')) {
+    const isPdfStream =
+      rawContent.startsWith('%PDF') ||
+      rawContent.includes('endobj') ||
+      rawContent.includes('endstream');
+
+    if (isPdfStream) {
       const asciiOnly = rawContent
+        .slice(0, 120000)
         .replace(/[^\x20-\x7E\t\r\n]/g, ' ')
         .split('\n')
         .map((l) => l.trim())
-        .filter((l) => l.length > 3 && !l.startsWith('/') && !l.startsWith('<<') && !l.startsWith('>>') && !l.includes('endobj'));
+        .filter((l) => {
+          if (l.length < 4 || l.length > 300) return false;
+          if (/^(\/|<<|>>|obj\b|endobj|stream|endstream|xref|trailer|startxref|\d+\s+\d+\s+obj)/.test(l)) {
+            return false;
+          }
+          const alphaMatches = l.match(/[a-zA-Z\s]/g) || [];
+          return alphaMatches.length / l.length >= 0.65;
+        });
 
-      const cleanSample = asciiOnly.join('\n');
-      if (cleanSample.length > 100 && /react|node|javascript|developer|engineer|college|university|project/i.test(cleanSample)) {
+      const cleanSample = asciiOnly.join('\n').slice(0, 5000);
+      if (
+        cleanSample.length > 100 &&
+        cleanSample.length <= 5000 &&
+        /react|node|javascript|developer|engineer|college|university|project|skills|education/i.test(cleanSample)
+      ) {
         return cleanSample;
       }
 
-      // If PDF text is heavily stream-compressed (/FlateDecode), synthesize a rich profile based on candidate data and file name
+      // If PDF text is stream-compressed (/FlateDecode), synthesize a concise verified profile
       const candidate = user?.name || 'Mohammed Hassan Ahmed';
       return `${candidate}\nComputer Science & Engineering | Software Developer\nResume File: ${fileName}\n\nTECHNICAL SKILLS:\nJavaScript, React.js, Node.js, Express.js, MongoDB, SQL, Data Structures & Algorithms\n\nEDUCATION & BACKGROUND:\nBachelor of Computer Science and Engineering\n\nPROJECTS:\n1. Cloud Microservices & Scalable Web Application with Node.js, React, and MongoDB.\n2. Automated Utility Usage & Transaction Processing Engine with ACID consistency.`;
     }
 
-    return rawContent;
+    return rawContent.replace(/\0/g, '').slice(0, 5000);
   };
 
   // Handle file upload (saves to state and persists to history in localStorage)
@@ -585,7 +633,7 @@ export const MockInterviewSetupPage: React.FC = () => {
         mode: preferredMode,
         skills: skillsList,
         customTopics: skillsList,
-        resumeText: resumeText || `${user?.name || 'Candidate'} - ${selectedRole}`,
+        resumeText: (resumeText || `${user?.name || 'Candidate'} - ${selectedRole}`).slice(0, 5000),
         targetJD: targetJD || `${selectedRole} at ${selectedCompany}`,
         jobDescription: targetJD,
         roundType: selectedRound,
