@@ -41,15 +41,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     try {
       const response = await apiClient.get('/auth/me');
       if (response.data?.success) {
-        const userData = response.data.user?.name === 'Mohammed Farooq'
-          ? { ...response.data.user, name: 'Mohammed Hassan Ahmed' }
-          : response.data.user;
-        const profileData = response.data.profile?.name === 'Mohammed Farooq'
-          ? { ...response.data.profile, name: 'Mohammed Hassan Ahmed' }
-          : response.data.profile;
-
-        setUser(userData);
-        setProfile(profileData);
+        setUser(response.data.user);
+        setProfile(response.data.profile);
       } else {
         logout();
       }
@@ -70,16 +63,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     try {
       const response = await apiClient.post('/auth/login', { email, password });
       const { token: receivedToken, user: receivedUser, profile: receivedProfile } = response.data;
-      const normalizedUser = receivedUser?.name === 'Mohammed Farooq'
-        ? { ...receivedUser, name: 'Mohammed Hassan Ahmed' }
-        : receivedUser;
-      const normalizedProfile = receivedProfile?.name === 'Mohammed Farooq'
-        ? { ...receivedProfile, name: 'Mohammed Hassan Ahmed' }
-        : receivedProfile;
       localStorage.setItem('interviewai_token', receivedToken);
       setToken(receivedToken);
-      setUser(normalizedUser);
-      setProfile(normalizedProfile);
+      setUser(receivedUser);
+      setProfile(receivedProfile);
     } finally {
       setIsLoading(false);
     }
@@ -95,16 +82,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         confirmPassword,
       });
       const { token: receivedToken, user: receivedUser, profile: receivedProfile } = response.data;
-      const normalizedUser = receivedUser?.name === 'Mohammed Farooq'
-        ? { ...receivedUser, name: 'Mohammed Hassan Ahmed' }
-        : receivedUser;
-      const normalizedProfile = receivedProfile?.name === 'Mohammed Farooq'
-        ? { ...receivedProfile, name: 'Mohammed Hassan Ahmed' }
-        : receivedProfile;
       localStorage.setItem('interviewai_token', receivedToken);
       setToken(receivedToken);
-      setUser(normalizedUser);
-      setProfile(normalizedProfile);
+      setUser(receivedUser);
+      setProfile(receivedProfile);
     } finally {
       setIsLoading(false);
     }

@@ -114,10 +114,11 @@ export interface DoubtSolverResponse {
 export interface MockInterviewQuestion {
   id: string;
   question: string;
-  category: 'Technical' | 'HR' | 'Behavioral' | 'System Design';
-  difficulty: 'Beginner' | 'Intermediate' | 'Advanced';
+  category: 'Technical' | 'HR' | 'Behavioral' | 'System Design' | 'Coding' | 'Database' | 'AI/ML' | string;
+  difficulty: 'Beginner' | 'Intermediate' | 'Advanced' | string;
   expectedPoints: string[];
   sampleFollowUp?: string;
+  requiresCode?: boolean;
 }
 
 export interface AnswerEvaluationResponse {
@@ -152,6 +153,8 @@ export class AIService {
   private static analysisCache = new Map<string, CodeAnalysisResponse>();
   private static explanationCache = new Map<string, CodeExplanationResponse>();
   private static cloudCircuitOpenUntil: number = 0;
+  private static preferredModelName: string = 'gemini-2.5-flash-lite';
+  private static modelCooldowns = new Map<string, number>();
 
   private static getClient(): GoogleGenAI | null {
     if (!this.aiClient) {
@@ -180,94 +183,240 @@ export class AIService {
   }
 
   /**
-   * Helper to execute Gemini content generation with ultra-fast models, circuit breaker, and instant fallbacks.
+   * Helper to execute Gemini content generation (text or multimodal) with multi-model pool,
+   * speculative hedging, ultra-fast failover for busy/failing models, and circuit breaker.
    */
-  private static async generateContentWithFallback(
-    prompt: string,
-    timeoutMs: number = 8000
+  public static async generateMultimodalWithFallback(
+    contents: any,
+    timeoutMs: number = 12000,
+    temperature: number = 0.35,
+    logPrefix: string = '[AIService]'
   ): Promise<string | null> {
     const client = this.getClient();
     if (!client) return null;
 
-    // 1. Check Circuit Breaker: If cloud AI recently failed with 503 (Overloaded) or timed out,
-    // do NOT waste seconds making the candidate wait. Instantly use our high-precision engine!
+    // 1. Check Circuit Breaker: Only short-circuit briefly when cloud API is confirmed unreachable/quota-exhausted
     const now = Date.now();
     if (now < this.cloudCircuitOpenUntil) {
       const remainingSeconds = Math.ceil((this.cloudCircuitOpenUntil - now) / 1000);
-      console.log(`[AIService] Gemini cloud API is currently cooling down (${remainingSeconds}s remaining). Serving instant high-precision response (0ms latency).`);
+      console.log(`${logPrefix} Gemini cloud API is cooling down (${remainingSeconds}s remaining). Serving offline response.`);
       return null;
     }
 
-    const candidateModels = [
-      'gemini-3.5-flash-lite',
-      'gemini-2.5-flash',
-      'gemini-3.8-flash',
+    // Curated multi-model pool across fastest Flash-Lite and Flash tiers
+    const candidateModels: Array<{ model: string; extraConfig?: Record<string, any> }> = [
+      { model: 'gemini-2.5-flash-lite' },
+      { model: 'gemini-3.1-flash-lite' },
+      { model: 'gemini-2.5-flash', extraConfig: { thinkingConfig: { thinkingBudget: 0 } } },
+      { model: 'gemini-3.5-flash-lite' },
+      { model: 'gemini-3.5-flash', extraConfig: { thinkingConfig: { thinkingBudget: 0 } } },
+      { model: 'gemini-2.0-flash' },
+      { model: 'gemini-1.5-flash' },
     ];
 
-    for (const model of candidateModels) {
+    // Filter out models currently in cooldown and prioritize the known fastest/working model
+    const activeCandidates = candidateModels.filter((c) => {
+      const cd = this.modelCooldowns.get(c.model);
+      return !cd || cd <= now;
+    });
+
+    const orderedCandidates = [...(activeCandidates.length > 0 ? activeCandidates : candidateModels)].sort((a, b) => {
+      if (a.model === this.preferredModelName) return -1;
+      if (b.model === this.preferredModelName) return 1;
+      return 0;
+    });
+
+    const deadline = Date.now() + timeoutMs;
+    const hedgeDelayMs = Math.min(2800, Math.max(1800, Math.floor(timeoutMs * 0.35)));
+    let instantNetworkFailures = 0;
+
+    const tryInvokeModel = async (
+      candidate: { model: string; extraConfig?: Record<string, any> },
+      maxAttemptMs: number
+    ): Promise<{ model: string; text: string; durationMs: number } | null> => {
+      const attemptStart = Date.now();
       let timerId: NodeJS.Timeout | undefined;
       try {
         const timeoutPromise = new Promise<null>((_, reject) => {
-          timerId = setTimeout(() => reject(new Error('AI_TIMEOUT_EXCEEDED')), timeoutMs);
+          timerId = setTimeout(() => reject(new Error('AI_TIMEOUT_EXCEEDED')), maxAttemptMs);
         });
 
+        const config: Record<string, any> = {
+          responseMimeType: 'application/json',
+          temperature,
+          ...(candidate.extraConfig || {}),
+        };
+
         const generatePromise = client.models.generateContent({
-          model,
-          contents: prompt,
-          config: {
-            responseMimeType: 'application/json',
-          },
+          model: candidate.model,
+          contents,
+          config,
         });
+        // Prevent late unhandled rejections if timeoutPromise settles first
+        generatePromise.catch(() => {});
 
         const response = (await Promise.race([generatePromise, timeoutPromise])) as any;
         if (timerId) clearTimeout(timerId);
+
         if (response && response.text) {
-          console.log(`[AIService] Successfully generated response using model: ${model}`);
-          this.cloudCircuitOpenUntil = 0; // Success! Circuit is healthy
-          return response.text;
+          const durationMs = Date.now() - attemptStart;
+          return { model: candidate.model, text: response.text, durationMs };
         }
+        return null;
       } catch (err: any) {
         if (timerId) clearTimeout(timerId);
-        const isOverloadOrTimeout =
-          err.message?.includes('503') ||
-          err.message?.includes('high demand') ||
-          err.message?.includes('UNAVAILABLE') ||
-          err.message?.includes('429') ||
-          err.message?.includes('RESOURCE_EXHAUSTED') ||
-          err.message?.includes('AI_TIMEOUT_EXCEEDED') ||
-          err.message?.includes('fetch failed') ||
-          err.message?.includes('ENOTFOUND') ||
-          err.message?.includes('ETIMEDOUT') ||
-          err.message?.includes('API_KEY_INVALID') ||
-          err.message?.includes('UNAUTHENTICATED');
+        const attemptMs = Date.now() - attemptStart;
+        const msg = err?.message || String(err);
 
-        if (isOverloadOrTimeout) {
-          // Avoid duplicate interleaved logs when concurrent requests time out in the same tick
-          const wasCircuitClosed = Date.now() >= this.cloudCircuitOpenUntil;
-          this.cloudCircuitOpenUntil = Date.now() + 15000;
-          if (wasCircuitClosed) {
-            const shortReason =
-              err.message?.includes('503') || err.message?.includes('high demand')
-                ? 'Cloud AI model overloaded (503 High Demand)'
-                : err.message?.includes('AI_TIMEOUT_EXCEEDED')
-                ? `Cloud AI timeout (>${timeoutMs}ms)`
-                : 'Cloud AI network unavailable';
-            console.log(`[AIService] ${shortReason}. Tripping Circuit Breaker for 15s. Using instant high-precision engine.`);
+        const isFatalAuth =
+          msg.includes('API_KEY_INVALID') ||
+          msg.includes('UNAUTHENTICATED');
+
+        const isQuotaOrBusy =
+          msg.includes('429') ||
+          msg.includes('RESOURCE_EXHAUSTED') ||
+          msg.includes('503') ||
+          msg.includes('Service Unavailable') ||
+          msg.includes('overloaded');
+
+        const isModelNotFound =
+          msg.includes('NOT_FOUND') ||
+          msg.includes('404') ||
+          msg.includes('is not found for API version') ||
+          msg.includes('not supported');
+
+        const isOfflineDnsOrRefused =
+          msg.includes('ENOTFOUND') ||
+          msg.includes('ECONNREFUSED') ||
+          (msg.includes('fetch failed') && attemptMs < 500);
+
+        if (isFatalAuth) {
+          this.cloudCircuitOpenUntil = Date.now() + 25000;
+          console.warn(`${logPrefix} Cloud AI auth error (${msg.slice(0, 120)}). Cooling down for 25s.`);
+          throw err;
+        }
+
+        if (isQuotaOrBusy) {
+          this.modelCooldowns.set(candidate.model, Date.now() + 30000);
+          console.warn(`${logPrefix} Model ${candidate.model} busy/rate-limited (${msg.slice(0, 100)}). Cooldown 30s. Failover active.`);
+        } else if (isModelNotFound) {
+          this.modelCooldowns.set(candidate.model, Date.now() + 300000);
+          console.warn(`${logPrefix} Model ${candidate.model} not available on this API key. Cooldown 5m.`);
+        } else if (isOfflineDnsOrRefused) {
+          instantNetworkFailures++;
+          if (instantNetworkFailures >= 2 || msg.includes('ENOTFOUND') || msg.includes('ECONNREFUSED')) {
+            this.cloudCircuitOpenUntil = Date.now() + 20000;
+            console.log(`${logPrefix} Cloud AI network unavailable. Tripping Circuit Breaker for 20s.`);
+            throw err;
           }
-          break; // Stop immediately; don't make user wait on secondary models
         } else {
-          let shortMsg = err.message || '';
-          try {
-            const parsed = JSON.parse(shortMsg);
-            if (parsed.error?.message) {
-              shortMsg = `${parsed.error.code || ''}: ${parsed.error.message}`;
-            }
-          } catch {}
-          console.warn(`[AIService] Model ${model} unavailable (${shortMsg}). Trying next candidate model...`);
+          console.warn(`${logPrefix} Model ${candidate.model} failed after ${attemptMs}ms (${msg.slice(0, 120)}). Trying fallback...`);
+        }
+        return null;
+      }
+    };
+
+    // Execute through candidate models with speculative hedging when primary model is busy/slow
+    for (let i = 0; i < orderedCandidates.length; i++) {
+      const remainingMs = deadline - Date.now();
+      if (remainingMs < 1500) break;
+
+      const candidate = orderedCandidates[i];
+      const attemptMaxMs = Math.min(remainingMs, 8500);
+      const candidatePromise = tryInvokeModel(candidate, attemptMaxMs);
+
+      if (i + 1 < orderedCandidates.length) {
+        let hedgeTimer: NodeJS.Timeout | undefined;
+        const hedgeDelayPromise = new Promise<'HEDGE_TRIGGER'>((resolve) => {
+          hedgeTimer = setTimeout(() => resolve('HEDGE_TRIGGER'), hedgeDelayMs);
+        });
+
+        let raceWinner:
+          | { type: 'RESULT'; res: { model: string; text: string; durationMs: number } | null }
+          | { type: 'HEDGE_TRIGGER' };
+
+        try {
+          raceWinner = await Promise.race([
+            candidatePromise.then((res) => ({ type: 'RESULT' as const, res })),
+            hedgeDelayPromise.then((type) => ({ type })),
+          ]);
+        } catch {
+          if (hedgeTimer) clearTimeout(hedgeTimer);
+          break;
+        }
+
+        if (raceWinner.type === 'RESULT') {
+          if (hedgeTimer) clearTimeout(hedgeTimer);
+          if (raceWinner.res && raceWinner.res.text) {
+            this.preferredModelName = raceWinner.res.model;
+            this.cloudCircuitOpenUntil = 0;
+            console.log(`${logPrefix} Successfully generated response using model: ${raceWinner.res.model} (${raceWinner.res.durationMs}ms)`);
+            return raceWinner.res.text;
+          }
+          // Candidate failed early (< hedgeDelayMs), loop continues immediately to next candidate
+          continue;
+        } else {
+          // 'HEDGE_TRIGGER': Candidate is taking longer than hedgeDelayMs (busy/queued in cloud)
+          const nextCandidate = orderedCandidates[i + 1];
+          console.log(`${logPrefix} Model ${candidate.model} is busy (> ${hedgeDelayMs}ms). Launching speculative fallback model ${nextCandidate.model}...`);
+
+          const nextRemainingMs = deadline - Date.now();
+          const nextAttemptMaxMs = Math.min(nextRemainingMs, 8500);
+          const nextPromise = tryInvokeModel(nextCandidate, nextAttemptMaxMs);
+
+          const parallelWinner = await Promise.race([
+            candidatePromise.then((res) => ({ res, source: 'primary' })),
+            nextPromise.then((res) => ({ res, source: 'fallback' })),
+          ]);
+
+          if (parallelWinner.res && parallelWinner.res.text) {
+            this.preferredModelName = parallelWinner.res.model;
+            this.cloudCircuitOpenUntil = 0;
+            console.log(`${logPrefix} Fast ${parallelWinner.source} model ${parallelWinner.res.model} won the race (${parallelWinner.res.durationMs}ms)!`);
+            return parallelWinner.res.text;
+          }
+
+          // Whichever finished first returned null (failed), await the other running candidate
+          const otherPromise = parallelWinner.source === 'primary' ? nextPromise : candidatePromise;
+          const otherRes = await otherPromise;
+          if (otherRes && otherRes.text) {
+            this.preferredModelName = otherRes.model;
+            this.cloudCircuitOpenUntil = 0;
+            console.log(`${logPrefix} Successfully generated response using model: ${otherRes.model} (${otherRes.durationMs}ms)`);
+            return otherRes.text;
+          }
+
+          // Both failed, advance index to skip the already-invoked nextCandidate
+          i++;
+          continue;
+        }
+      } else {
+        // Last available candidate in pool
+        try {
+          const res = await candidatePromise;
+          if (res && res.text) {
+            this.preferredModelName = res.model;
+            this.cloudCircuitOpenUntil = 0;
+            console.log(`${logPrefix} Successfully generated response using model: ${res.model} (${res.durationMs}ms)`);
+            return res.text;
+          }
+        } catch {
+          break;
         }
       }
     }
+
     return null;
+  }
+
+  /**
+   * Text-prompt convenience wrapper over generateMultimodalWithFallback.
+   */
+  private static async generateContentWithFallback(
+    prompt: string,
+    timeoutMs: number = 12000
+  ): Promise<string | null> {
+    return this.generateMultimodalWithFallback(prompt, timeoutMs);
   }
 
   /**
@@ -310,7 +459,7 @@ Return ONLY a valid JSON object matching this schema with NO outside text:
   "verdictSummary": "1-2 sentence executive verdict on this solution for campus/MNC placement."
 }`;
 
-    const text = await this.generateContentWithFallback(prompt);
+    const text = await this.generateContentWithFallback(prompt, 9500);
     if (text) {
       try {
         const firstBrace = text.indexOf('{');
@@ -409,7 +558,7 @@ Return ONLY a valid JSON object matching this schema with NO outside text:
   ]
 }`;
 
-    const text = await this.generateContentWithFallback(prompt);
+    const text = await this.generateContentWithFallback(prompt, 9500);
     if (text) {
       try {
         const firstBrace = text.indexOf('{');
@@ -536,103 +685,74 @@ Provide your response in strictly valid JSON format matching this schema with NO
     );
     const conversationId = conv.id;
 
-    // 2. Persist the incoming user message
-    await ConversationService.saveMessage(conversationId, 'user', cleanDoubt);
+    // 2. Skip DB history query for brand-new conversations; for existing ones fetch prior turns first
+    const { history: priorHistory, summary } = conv.isNew
+      ? { history: [], summary: '' }
+      : await ConversationService.getHistoryForAI(conversationId, 10);
 
-    // 3. Retrieve conversation history and summary from database
-    const { history: dbHistory, summary } =
-      await ConversationService.getHistoryForAI(conversationId, 20);
+    const truncateTurn = (txt: string, maxLen: number) =>
+      txt.length > maxLen ? `${txt.slice(0, maxLen)}...` : txt;
 
-    // Build chronological chat context excluding the message we just saved
+    // Build chronological chat context from prior turns
     let contextHistoryText = '';
-    if (dbHistory.length > 1) {
-      const priorTurns = dbHistory.slice(0, -1);
-      contextHistoryText = priorTurns
-        .map((h) => `${h.role === 'user' ? 'USER' : 'ASSISTANT'}: ${h.content}`)
+    if (priorHistory.length > 0) {
+      contextHistoryText = priorHistory
+        .map((h) => {
+          const speaker = h.role === 'user' ? 'USER' : 'ASSISTANT';
+          const cap = h.role === 'user' ? 800 : 550;
+          return `${speaker}: ${truncateTurn(String(h.content || ''), cap)}`;
+        })
         .join('\n\n');
     } else if (params.history && params.history.length > 0) {
       contextHistoryText = params.history
-        .map((h) => `${h.sender.toUpperCase()}: ${h.message}`)
+        .slice(-8)
+        .map((h) => {
+          const speaker = h.sender.toUpperCase();
+          const cap = h.sender === 'user' ? 800 : 550;
+          return `${speaker}: ${truncateTurn(String(h.message || ''), cap)}`;
+        })
         .join('\n\n');
     }
 
-    const prompt = `You are the main AI Mentor and Conversational Assistant inside an AI-powered Interview Preparation and Learning Platform.
-Your goal is NOT to behave like a limited "doubt solver" or a collection of predefined answers.
-You must behave like a helpful conversational AI mentor that understands the user's current question AND remembers the ongoing conversation context.
+    const prompt = `You are the conversational AI Mentor inside a technical learning & interview preparation platform.
+Understand the user's ACTUAL question and ongoing conversation context accurately—never give generic canned templates or guess unsupported facts.
 
-CORE PURPOSE:
-- You help the user with any reasonable educational, technical, and career question: Programming, DSA, DBMS, Operating Systems, Computer Networks, System Design, Web Development (React, Node.js, Express, MongoDB, JavaScript, TypeScript, Python, Java, C/C++), APIs, Git/GitHub, Software Engineering, Debugging, Project development, AI/ML concepts, Interview preparation, HR questions, Placement preparation, Career guidance, Study planning, Learning concepts, Resume/project discussions, General educational questions, and Casual conversation related to learning.
-- Do NOT restrict yourself to predefined questions or keyword-based answers. Answer the user's ACTUAL question.
+RULES:
+- MEMORY & FOLLOW-UPS: Read history first. Resolve pronouns/follow-ups ("why?", "code?", "in Python?", "fix this", "that error") from prior turns; switch topics naturally if the user changes topic.
+- STRICT ACCURACY: Double-check code syntax, logic, edge cases, and time/space complexity before responding. Never invent APIs or methods. For debugging questions, pinpoint the exact cause and provide the corrected fix.
+- LANGUAGE: Answer in clear English by default; if the user writes in Hinglish/Roman Hindi (e.g. "bhai", "kya", "kaise"), reply naturally in friendly Hinglish.
+- GREETINGS: Reply warmly and concisely to greetings (e.g. "As-salamu alaykum" -> "Wa alaikum assalam...").
+- CONCISENESS: Keep answers clear, direct, runnable (when code helps), and avoid unnecessary fluff.
 
-CONVERSATION MEMORY & CONTINUITY (CRITICAL):
-- Treat the conversation as a continuous conversation, not as independent questions.
-- For every new user message:
-  1. Read the available conversation history.
-  2. Identify what was discussed previously.
-  3. Determine whether the new message is: a follow-up question, a clarification, a user correction, a continuation, or a new topic.
-  4. Use previous messages when relevant. Do NOT make the user repeat information that already exists in the conversation!
-  5. Handle short follow-ups intelligently: ("why?", "how?", "then?", "what about Java?", "give example", "explain this", "same for Python", "is this correct?", "what should I use?", "continue", "make it simple", "code?", "and backend?", "what about MongoDB?"). NEVER ask "code for what?" or "what topic?" if it was already in the conversation!
-  6. Handle user corrections immediately: ("No", "That's not what I meant", "I mean...", "Not this", "Wrong", "You misunderstood") by immediately reconsidering the previous answer and answering according to the corrected intent.
-  7. Resolve contextual references: ("this", "that", "it", "the above", "same thing", "previous one", "this code", "that error", "my project", "my app", "the backend", "the frontend") using conversation history.
-  8. Remember project context: If the user mentioned building an app or project tech stack earlier, use that context for future questions.
-  9. Memory priority: 1. Current user message. 2. Recent conversation history. 3. Earlier relevant conversation history. 4. General knowledge.
-  10. If the user clearly changes topic, switch topics naturally without forcing old topics.
+CONVERSATION SUMMARY: ${summary || 'None'}
+RECENT HISTORY:
+${contextHistoryText || 'None (start of conversation)'}
 
-DO NOT USE KEYWORD-BASED ANSWERING:
-- Never answer a question only because it contains a keyword. Understand the COMPLETE question.
-
-ANSWER STYLE & LANGUAGE:
-- Speak in simple, clear English by default.
-- If the user asks in Hinglish (Roman Hindi/Urdu, e.g. "bhai", "kaise ho", "kya haal", "batao", "samjha do"), answer naturally and conversationally in friendly Hinglish!
-- Adapt to user level: simple words and small examples for beginners; deeper trade-offs, architecture and implementation for advanced queries.
-- Only provide code when it is useful or requested. Keep code runnable and explain key parts.
-- When the user asks for debugging/errors: understand the error, identify the likely cause, explain why it happens, and give the exact fix.
-- Handle greetings ("As salamu alaikum", "Good morning", "Hi") naturally and warmly.
-
-CONVERSATION SUMMARY (if any):
-${summary || 'None'}
-
-RECENT CONVERSATION HISTORY:
-${contextHistoryText || 'None (This is the start of the conversation)'}
-
-CURRENT USER MESSAGE:
+USER QUESTION:
 "${cleanDoubt}"
+Topic: "${params.topic || 'General'}" | Target Role: "${params.role || 'Software Engineer'}"
 
-Context / Focus Topic: "${params.topic || 'General'}"
-Target Role: "${params.role || 'Software Engineer'}"
-
-OUTPUT FORMAT (strictly valid JSON with NO outside markdown):
+Return strictly valid JSON (no markdown outside JSON):
 {
-  "directAnswer": "Main comprehensive conversational answer to the user's question, accounting for conversation context and follow-up intent.",
-  "keyPoints": [
-    "Important takeaway or step 1 (leave as empty array [] for simple casual chat/greetings)"
-  ],
+  "directAnswer": "Accurate, clear answer directly addressing the user's question.",
+  "keyPoints": ["Concise takeaway 1 (empty [] for casual chat/greetings)"],
   "codeSnippet": null,
   "interviewTip": "",
-  "suggestedFollowUps": [
-    "Contextually relevant follow-up question 1",
-    "Contextually relevant follow-up question 2"
-  ],
-  "conversationContext": {
-    "topic": "Current topic name",
-    "isFollowUp": true,
-    "usedPreviousContext": true
-  }
+  "suggestedFollowUps": ["Relevant follow-up 1", "Relevant follow-up 2"],
+  "conversationContext": { "topic": "Current topic", "isFollowUp": true, "usedPreviousContext": true }
 }
-* Note: If code is helpful or requested, codeSnippet should be: { "language": "...", "code": "...", "explanation": "..." }, otherwise null.
-* Note: interviewTip should be empty string "" unless user asked an interview/placement question.`;
+Note: Set codeSnippet to { "language": "...", "code": "...", "explanation": "..." } only when code is helpful or requested; set interviewTip to "" unless interview-related.`;
 
-    const text = await this.generateContentWithFallback(prompt);
+    // 3. Persist the incoming user message in parallel with Cloud AI generation
+    const [, text] = await Promise.all([
+      ConversationService.saveMessage(conversationId, 'user', cleanDoubt),
+      this.generateContentWithFallback(prompt, 14000),
+    ]);
+
+    const hasPriorContext = priorHistory.length > 0;
     if (text) {
       try {
-        const firstBrace = text.indexOf('{');
-        const lastBrace = text.lastIndexOf('}');
-        const jsonStr =
-          firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace
-            ? text.substring(firstBrace, lastBrace + 1)
-            : text.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
-
-        const parsed = JSON.parse(jsonStr) as DoubtSolverResponse;
+        const parsed = this.extractJson(text) as DoubtSolverResponse;
         if (parsed.directAnswer) {
           const responsePayload: DoubtSolverResponse = {
             doubt: cleanDoubt,
@@ -646,8 +766,8 @@ OUTPUT FORMAT (strictly valid JSON with NO outside markdown):
               : ['Can you provide an example?', 'What are the main trade-offs?'],
             conversationContext: parsed.conversationContext || {
               topic: params.topic || 'General',
-              isFollowUp: dbHistory.length > 1,
-              usedPreviousContext: dbHistory.length > 1,
+              isFollowUp: hasPriorContext,
+              usedPreviousContext: hasPriorContext,
             },
             conversationId,
           };
@@ -672,7 +792,12 @@ OUTPUT FORMAT (strictly valid JSON with NO outside markdown):
           try {
             extractedAnswer = JSON.parse(`"${match[1]}"`);
           } catch {
-            extractedAnswer = match[1].replace(/\\n/g, '\n').replace(/\\"/g, '"');
+            extractedAnswer = match[1]
+              .replace(/\\r\\n/g, '\n')
+              .replace(/\\n/g, '\n')
+              .replace(/\\t/g, '\t')
+              .replace(/\\"/g, '"')
+              .replace(/\\\\/g, '\\');
           }
         } else {
           // If no JSON directAnswer field, strip Markdown codeblock markers and use raw text
@@ -692,8 +817,8 @@ OUTPUT FORMAT (strictly valid JSON with NO outside markdown):
             suggestedFollowUps: ['Could you provide an example?', 'What are the main trade-offs?'],
             conversationContext: {
               topic: params.topic || 'General',
-              isFollowUp: dbHistory.length > 1,
-              usedPreviousContext: dbHistory.length > 1,
+              isFollowUp: hasPriorContext,
+              usedPreviousContext: hasPriorContext,
             },
             conversationId,
           };
@@ -710,7 +835,7 @@ OUTPUT FORMAT (strictly valid JSON with NO outside markdown):
     }
 
     // Graceful offline fallback if API is temporarily unreachable
-    const fallback = this.fallbackSolveDoubt(params, dbHistory);
+    const fallback = this.fallbackSolveDoubt(params, priorHistory);
     fallback.conversationId = conversationId;
     const savedFallbackMsg = await ConversationService.saveMessage(
       conversationId,
@@ -730,8 +855,18 @@ OUTPUT FORMAT (strictly valid JSON with NO outside markdown):
     history?: any[]
   ): DoubtSolverResponse {
     const q = req.doubt.toLowerCase().trim();
-    // Comprehensive Hinglish & Roman Urdu/Hindi token detector
-    const isHinglish = /\b(ab|aaj|kal|my|mai|main|me|hum|mujhe|mera|meri|mere|kya|kiya|kuch|koi|kaise|kaisa|kaisi|karo|kare|karu|karoon|karein|karna|karta|karti|padna|padhna|padhe|padho|padhai|shuru|shuruat|start|seekhe|seekhna|seekho|hai|hain|ho|hoon|samjha|samjhao|batao|bataiye|bolo|chahiye|nahi|nai|nahin|nhi|nakko|aasan|taiyari|dost|bhai|bro|sir|haan|sahi|achha|theek|kaun|kab|kitna|help|tension|man|lag|shukriya|liye|keliye|hoga|hogi|hoge|kahan|kidhar|kisko|kise|kaunsi|kaunsa|konsa|konsi|pehle|pehla|baad|bolte|banae|banao|banayein|bhi|toh|to|un|wo|woh|ye|yeh)\b/i.test(q);
+    // Strict Hinglish / Roman Hindi-Urdu detector (avoids false positives on English words like my/to/start/help/me)
+    const strippedEnglishMe = q.replace(
+      /\b(tell|help|give|show|ask|let|for|to|with|teach|make|send|explain\s+to)\s+me\b/gi,
+      ''
+    );
+    const isHinglish =
+      /\b(aaj|kal|main|hum|mujhe|mera|meri|mere|kya|kiya|kuch|koi|kaise|kaisa|kaisi|karo|kare|karu|karoon|karein|karna|karta|karti|padna|padhna|padhe|padho|padhai|shuru|shuruat|seekhe|seekhna|seekho|hai|hain|hoon|samjha|samjhao|batao|bataiye|bolo|chahiye|nahi|nai|nahin|nhi|nakko|aasan|taiyari|dost|bhai|haan|sahi|achha|theek|kaun|kab|kitna|shukriya|dhanyawad|liye|keliye|hoga|hogi|hoge|kahan|kidhar|kisko|kise|kaunsi|kaunsa|konsa|konsi|pehle|pehla|baad|bolte|banae|banao|banayein|bhi|toh|woh|yeh|mein|kyun|kyu|karke|karne|wala|wali|wale|agar|phir)\b/i.test(
+        strippedEnglishMe
+      ) ||
+      /\b(java|python|cpp|c\+\+|js|javascript|react|node|sql|dbms|os|dsa|array|arrays|string|strings|loop|code|interview)\s+me\b/i.test(
+        q
+      );
 
     // Look at last 1-3 turns in conversation history for contextual follow-up resolution
     const recentHistoryText = (history || [])
@@ -1695,10 +1830,56 @@ SELECT * FROM orders WHERE created_at BETWEEN '2026-01-01' AND '2026-01-31';
       };
     }
 
-    // 12. Smart Substantive Fallback for General Guidance, Placement Prep & Concepts
-    const isPrepQuery = /\b(placement|prepare|preparation|taiyari|start|shuru|guide|strategy|roadmap|timetable|schedule)\b/i.test(q);
-    const isProjectQuery = /\b(project|projects|capstone|portfolio|resume|cv)\b/i.test(q);
-    const isDsaQuery = /\b(dsa|algorithm|algorithms|array|tree|graph|dp|dynamic|recursion|binary|sorting|pointer)\b/i.test(q);
+    // 11b. REST API (specific offline fallback before broad heuristics)
+    if (/\b(rest\s*api|restful\s*api|what is rest)\b/i.test(q)) {
+      return {
+        doubt: req.doubt,
+        directAnswer: isHinglish
+          ? `**REST API (Representational State Transfer)** ek standard architectural style hai jo HTTP methods ke through client aur server ke beech data exchange karta hai:
+
+1. **Resources & Endpoints:** Har entity ek URL hoti hai (jaise \`/api/users\`, \`/api/orders/42\`).
+2. **HTTP Methods:**
+   - \`GET\`: Data read karna
+   - \`POST\`: Naya resource create karna
+   - \`PUT\` / \`PATCH\`: Existing resource update karna
+   - \`DELETE\`: Resource remove karna
+3. **Stateless:** Har request me saari required info (auth token, params) khud hoti hai; server session yaad nahi rakhta, isliye scaling aasan hoti hai.`
+          : `A **REST API (Representational State Transfer)** is a stateless client-server architecture built over HTTP:
+
+1. **Resource-Oriented URLs:** Data entities map to predictable endpoints such as \`/api/users\` or \`/api/orders/42\`.
+2. **Standard HTTP Verbs:**
+   - \`GET\`: Retrieve resources safely without side effects
+   - \`POST\`: Create a new resource
+   - \`PUT\` / \`PATCH\`: Replace or partially update an existing resource
+   - \`DELETE\`: Remove a resource
+3. **Statelessness:** Each HTTP request carries all credentials (e.g., JWT in \`Authorization\` header) and parameters needed to process it independently, enabling horizontal scaling.`,
+        keyPoints: [
+          'Uses standard HTTP verbs (GET, POST, PUT, PATCH, DELETE) and JSON payloads',
+          'Stateless: server does not store client session state between requests',
+          'Clear separation between frontend client and backend server',
+        ],
+        interviewTip: 'Highlight idempotency: GET, PUT, and DELETE are idempotent (repeating them has the same final state), while POST is not.',
+        suggestedFollowUps: [
+          'What about authentication in REST APIs?',
+          'What is the difference between PUT and PATCH?',
+        ],
+      };
+    }
+
+    // 12. Smart Substantive Fallback ONLY when actually asking about Placement Prep / Career Strategy / DSA Roadmap
+    const hasSpecificTechTopic = /\b(react|node|express|mongodb|sql|mysql|postgres|docker|kubernetes|aws|jwt|cors|vite|git|python|java|c\+\+|cpp|javascript|typescript|html|css|tree|bst|linked list|stack|queue|heap|hash|trie|sort|quicksort|mergesort|bfs|dfs|dijkstra|knapsack|deadlock|semaphore|mutex|paging|virtual memory|tcp|udp|dns|http|https|useeffect|usestate|async|promise|closure|error|bug|exception)\b/i.test(q);
+    const isPrepQuery =
+      !hasSpecificTechTopic &&
+      (/\b(placement|placements|interview preparation|prepare for placement|taiyari|study plan|study roadmap|timetable|schedule|roadmap)\b/i.test(q) ||
+        /\b(how|where)\s+to\s+start\s+(coding|prep|preparation|placement|placements|dsa)\b/i.test(q));
+    const isProjectQuery =
+      /\b(project ideas?|capstone ideas?|portfolio|resume|cv)\b/i.test(q) ||
+      (/\bprojects?\b/i.test(q) &&
+        /\b(build|make|create|suggest|good|best|placement|resume|impress)\b/i.test(q) &&
+        !/\b(error|bug|fix|crash|issue|not working|route|api|deploy|cors)\b/i.test(q));
+    const isDsaQuery =
+      /^dsa$/i.test(q) ||
+      /\b(master dsa|learn dsa|dsa roadmap|dsa strategy|how to start dsa|how to study dsa|dsa kaise|algorithms roadmap)\b/i.test(q);
 
     if (isPrepQuery) {
       return {
@@ -1852,62 +2033,36 @@ SELECT * FROM orders WHERE created_at BETWEEN '2026-01-01' AND '2026-01-31';
       };
     }
 
-    // Default clean comprehensive fallback
+    // Default honest offline fallback when Cloud AI is temporarily unreachable
     if (isHinglish) {
       return {
         doubt: req.doubt,
-        directAnswer: `Bhai, "${req.doubt}" par direct aur practical placement advice:
-
-1. Technical Clarity:
-- Interview me kisi bhi technical sawal ka answer hamesha 3 steps me do:
-  a. Definition / High-Level Intuition (1-2 sentences)
-  b. Under-the-hood Working & Trade-offs (memory, CPU, architecture)
-  c. Real-world Example ya Code snippet
-
-2. Best Practice:
-- Agar coding sawal hai to edge cases (null inputs, empty arrays, negative numbers, extreme values) pehle consider karo.
-- Agar system design ya theory sawal hai to scalability, caching aur bottlenecks highlight karo.
-
-Aap is topic me code implementation, dry-run ya real interview questions jo bhi chahein, pooch lijiye!`,
+        directAnswer: `Abhi Cloud AI service temporarily slow ya unreachable hai, isliye "${req.doubt}" ka full live AI answer load nahi ho paaya. Please ek baar phir se bhejein (retry karein) ya apna error/code snippet paste karein — main turant exact solution dunga.`,
         keyPoints: [
-          `Focus: ${req.doubt}`,
-          'Structure responses clearly: Definition -> Mechanism -> Trade-offs',
-          'Always address edge cases and computational complexity'
+          `Query: ${req.doubt}`,
+          'Cloud AI temporary network/timeout ki wajah se offline fallback active hua',
+          'Dobara send karne par live Gemini mentor response aayega'
         ],
-        interviewTip: 'Keep your explanations concise and structured. Use the 3-step framework to impress senior technical interviewers.',
+        interviewTip: '',
         suggestedFollowUps: [
-          'Can you explain this with a practical code example?',
-          'What are the common interview pitfalls in this topic?',
-          'How would this be asked in an Amazon or Google technical round?'
+          req.doubt,
+          'Explain with a code example'
         ]
       };
     }
 
     return {
       doubt: req.doubt,
-      directAnswer: `Here is a structured, practical breakdown regarding "${req.doubt}":
-
-1. Foundational Engineering Principle:
-- Approach technical questions systematically:
-  a. High-level definition and core problem it solves.
-  b. Underlying runtime mechanism (memory layout, call stack, execution phases).
-  c. Practical engineering trade-offs (Time, Space, Maintainability).
-
-2. Production & Interview Application:
-- In technical interviews, interviewers look for structured thinking over memorized trivia.
-- Highlight edge cases (boundary conditions, concurrency, scalability bottlenecks) to demonstrate Senior-level depth.
-
-Feel free to ask for concrete code implementations, step-by-step dry runs, or target company questions on this topic!`,
+      directAnswer: `The live AI service was temporarily slow or unreachable while processing "${req.doubt}". Please retry sending your message—or paste any specific code/error details if you are debugging—and the live AI Mentor will generate an exact answer.`,
       keyPoints: [
-        `Topic: ${req.doubt}`,
-        'Structure answers: Definition -> Internal Mechanics -> Real-world Trade-offs',
-        'Analyze Big-O bounds and edge cases proactively'
+        `Query: ${req.doubt}`,
+        'Temporary offline fallback response',
+        'Retry to fetch a full live AI explanation and code example'
       ],
-      interviewTip: 'Always link theory back to practical engineering: why this approach is chosen in real production systems.',
+      interviewTip: '',
       suggestedFollowUps: [
-        'Can you show a production-grade code implementation?',
-        'What are the most frequent interview questions on this topic?',
-        'How does this scale under high concurrency?'
+        req.doubt,
+        'Can you explain this with a code example?'
       ]
     };
   }
@@ -2282,7 +2437,203 @@ console.log("Execution output:", demo);`,
   }
 
   /**
-   * Generates dynamic mock interview questions tailored to the candidate's target role.
+   * Extracts real technologies and project lines from a candidate's resume and custom topics.
+   */
+  public static extractResumeHighlights(
+    resumeText?: string,
+    customTopics?: string[]
+  ): { skills: string[]; projects: string[] } {
+    const raw = (resumeText || '').replace(/\r/g, '');
+    const knownTech = [
+      'React', 'Next.js', 'TypeScript', 'JavaScript', 'Node.js', 'Express', 'MongoDB',
+      'PostgreSQL', 'MySQL', 'SQL', 'Redis', 'Docker', 'Kubernetes', 'AWS', 'Java',
+      'Spring Boot', 'Python', 'Django', 'FastAPI', 'Flask', 'C++', 'Go', 'GraphQL',
+      'Kafka', 'RabbitMQ', 'PyTorch', 'TensorFlow', 'LangChain', 'RAG', 'Tailwind',
+    ];
+    const combinedLower = `${raw} ${(customTopics || []).join(' ')}`.toLowerCase();
+    const detectedSkills = knownTech.filter((tech) => {
+      const escaped = tech.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      return new RegExp(`(^|[^a-z0-9])${escaped}([^a-z0-9]|$)`, 'i').test(combinedLower);
+    });
+    const mergedSkills = Array.from(
+      new Set([...(customTopics || []).map((t) => t.trim()).filter(Boolean), ...detectedSkills])
+    ).slice(0, 8);
+
+    const lines = raw.split('\n').map((l) => l.trim()).filter((l) => l.length >= 4 && l.length <= 120);
+    const projects: string[] = [];
+    const projHeaderIdx = lines.findIndex((l) => /^#*\s*(projects?|experience|internships?)\b/i.test(l));
+    if (projHeaderIdx !== -1) {
+      for (let i = projHeaderIdx + 1; i < Math.min(lines.length, projHeaderIdx + 10); i++) {
+        const line = lines[i];
+        if (/^(education|skills|certifications|achievements|hobbies|declaration)\b/i.test(line)) break;
+        const cleaned = line.replace(/^[-*•\d.)\s]+/, '').split(/[:|\-–—]/)[0].trim();
+        if (cleaned.length >= 4 && cleaned.length <= 65 && !/^(tech stack|description|role|duration)$/i.test(cleaned)) {
+          if (!projects.includes(cleaned)) projects.push(cleaned);
+        }
+        if (projects.length >= 3) break;
+      }
+    }
+
+    return { skills: mergedSkills, projects };
+  }
+
+  /**
+   * Returns a varied, difficulty-matched coding challenge template for live Coding interviews.
+   */
+  public static getCodingProblemTemplate(
+    difficulty: string = 'Intermediate',
+    customTopics: string[] = [],
+    resumeText: string = ''
+  ): {
+    title: string;
+    description: string;
+    difficulty: string;
+    constraints: string[];
+    starterCode: Record<string, string>;
+    sampleInput: string;
+    sampleOutput: string;
+  } {
+    const problems = [
+      {
+        title: 'Valid Parentheses & Bracket Matcher',
+        difficulty: 'Beginner',
+        description:
+          'Given a string s containing only "(", ")", "{", "}", "[" and "]", determine if the input string is valid. Every opening bracket must be closed by the same type in the correct nested order.',
+        constraints: ['1 <= s.length <= 10^4', 'Target Time: O(n), Space: O(n)'],
+        starterCode: {
+          javascript: `function isValid(s) {\n  // Write your O(n) stack solution\n  return false;\n}\n\nconsole.log(isValid("()[]{}"));\nconsole.log(isValid("(]"));`,
+          python: `def is_valid(s: str) -> bool:\n    # Write your O(n) stack solution\n    pass\n\nprint(is_valid("()[]{}"))`,
+          java: `import java.util.*;\n\nclass Solution {\n    public static boolean isValid(String s) {\n        return false;\n    }\n    public static void main(String[] args) {\n        System.out.println(isValid("()[]{}"));\n    }\n}`,
+          cpp: `#include <iostream>\n#include <stack>\nusing namespace std;\n\nbool isValid(string s) {\n    return false;\n}\n\nint main() {\n    cout << (isValid("()[]{}") ? "true" : "false") << endl;\n    return 0;\n}`,
+        },
+        sampleInput: 's = "({[]})"',
+        sampleOutput: 'true',
+      },
+      {
+        title: 'Subarray Sum Equals K',
+        difficulty: 'Intermediate',
+        description:
+          'Given an integer array nums (which may include negative numbers) and an integer k, return the total number of contiguous subarrays whose sum equals k.',
+        constraints: ['1 <= nums.length <= 2 * 10^4', 'Elements can be negative', 'Target Time: O(n), Space: O(n) using Prefix Sum + HashMap'],
+        starterCode: {
+          javascript: `function subarraySum(nums, k) {\n  // Use prefix sum + Map for O(n) time\n  return 0;\n}\n\nconsole.log(subarraySum([1, 1, 1], 2));\nconsole.log(subarraySum([1, -1, 0], 0));`,
+          python: `def subarray_sum(nums: list[int], k: int) -> int:\n    # Use prefix sum + dict for O(n) time\n    pass\n\nprint(subarray_sum([1, 1, 1], 2))`,
+          java: `import java.util.*;\n\nclass Solution {\n    public static int subarraySum(int[] nums, int k) {\n        return 0;\n    }\n    public static void main(String[] args) {\n        System.out.println(subarraySum(new int[]{1, 1, 1}, 2));\n    }\n}`,
+          cpp: `#include <iostream>\n#include <vector>\n#include <unordered_map>\nusing namespace std;\n\nint subarraySum(vector<int>& nums, int k) {\n    return 0;\n}\n\nint main() {\n    vector<int> a = {1, 1, 1};\n    cout << subarraySum(a, 2) << endl;\n    return 0;\n}`,
+        },
+        sampleInput: 'nums = [1, 2, 3], k = 3',
+        sampleOutput: '2',
+      },
+      {
+        title: 'Longest Substring Without Repeating Characters',
+        difficulty: 'Intermediate',
+        description:
+          'Given a string s, find the length of the longest contiguous substring without duplicate characters.',
+        constraints: ['0 <= s.length <= 5 * 10^4', 'Target Time: O(n) using Sliding Window'],
+        starterCode: {
+          javascript: `function lengthOfLongestSubstring(s) {\n  // Implement sliding window O(n)\n  return 0;\n}\n\nconsole.log(lengthOfLongestSubstring("abcabcbb"));\nconsole.log(lengthOfLongestSubstring("pwwkew"));`,
+          python: `def length_of_longest_substring(s: str) -> int:\n    # Implement sliding window O(n)\n    pass\n\nprint(length_of_longest_substring("abcabcbb"))`,
+          java: `import java.util.*;\n\nclass Solution {\n    public static int lengthOfLongestSubstring(String s) {\n        return 0;\n    }\n    public static void main(String[] args) {\n        System.out.println(lengthOfLongestSubstring("abcabcbb"));\n    }\n}`,
+          cpp: `#include <iostream>\n#include <string>\nusing namespace std;\n\nint lengthOfLongestSubstring(string s) {\n    return 0;\n}\n\nint main() {\n    cout << lengthOfLongestSubstring("abcabcbb") << endl;\n    return 0;\n}`,
+        },
+        sampleInput: 's = "abcabcbb"',
+        sampleOutput: '3',
+      },
+      {
+        title: 'Merge Overlapping Intervals',
+        difficulty: 'Intermediate',
+        description:
+          'Given an array of intervals where intervals[i] = [start_i, end_i], merge all overlapping intervals and return an array of the non-overlapping intervals covering all intervals in the input.',
+        constraints: ['1 <= intervals.length <= 10^4', 'Target Time: O(n log n)'],
+        starterCode: {
+          javascript: `function mergeIntervals(intervals) {\n  // Sort by start time and merge overlaps\n  return [];\n}\n\nconsole.log(JSON.stringify(mergeIntervals([[1,3],[2,6],[8,10],[15,18]])));`,
+          python: `def merge_intervals(intervals: list[list[int]]) -> list[list[int]]:\n    # Sort by start time and merge overlaps\n    pass\n\nprint(merge_intervals([[1,3],[2,6],[8,10],[15,18]]))`,
+          java: `import java.util.*;\n\nclass Solution {\n    public static int[][] merge(int[][] intervals) {\n        return new int[0][0];\n    }\n    public static void main(String[] args) {\n        System.out.println(Arrays.deepToString(merge(new int[][]{{1,3},{2,6},{8,10}})));\n    }\n}`,
+          cpp: `#include <iostream>\n#include <vector>\n#include <algorithm>\nusing namespace std;\n\nint main() {\n    cout << "Implement merge intervals" << endl;\n    return 0;\n}`,
+        },
+        sampleInput: 'intervals = [[1,3],[2,6],[8,10],[15,18]]',
+        sampleOutput: '[[1,6],[8,10],[15,18]]',
+      },
+      {
+        title: 'Top K Frequent Elements',
+        difficulty: 'Intermediate',
+        description:
+          'Given an integer array nums and an integer k, return the k most frequent elements in better than O(n log n) time complexity.',
+        constraints: ['1 <= nums.length <= 10^5', 'Target Time: O(n) via Bucket Sort or O(n log k) via Min-Heap'],
+        starterCode: {
+          javascript: `function topKFrequent(nums, k) {\n  // Frequency map + bucket sort / heap\n  return [];\n}\n\nconsole.log(topKFrequent([1,1,1,2,2,3], 2));`,
+          python: `def top_k_frequent(nums: list[int], k: int) -> list[int]:\n    # Frequency dict + bucket sort / heap\n    pass\n\nprint(top_k_frequent([1,1,1,2,2,3], 2))`,
+          java: `import java.util.*;\n\nclass Solution {\n    public static int[] topKFrequent(int[] nums, int k) {\n        return new int[0];\n    }\n    public static void main(String[] args) {\n        System.out.println(Arrays.toString(topKFrequent(new int[]{1,1,1,2,2,3}, 2)));\n    }\n}`,
+          cpp: `#include <iostream>\n#include <vector>\nusing namespace std;\n\nint main() {\n    cout << "Implement Top K Frequent Elements" << endl;\n    return 0;\n}`,
+        },
+        sampleInput: 'nums = [1,1,1,2,2,3], k = 2',
+        sampleOutput: '[1, 2]',
+      },
+      {
+        title: 'Design an O(1) LRU Cache',
+        difficulty: 'Advanced',
+        description:
+          'Design a Least Recently Used (LRU) cache supporting get(key) and put(key, value) in strictly O(1) average time complexity.',
+        constraints: ['1 <= capacity <= 10^4', 'Both get and put must run in O(1) average time'],
+        starterCode: {
+          javascript: `class LRUCache {\n  constructor(capacity) {\n    this.capacity = capacity;\n    this.cache = new Map();\n  }\n  get(key) {\n    return -1;\n  }\n  put(key, value) {\n  }\n}\n\nconst lru = new LRUCache(2);\nlru.put(1, 10);\nlru.put(2, 20);\nconsole.log(lru.get(1));`,
+          python: `class LRUCache:\n    def __init__(self, capacity: int):\n        self.capacity = capacity\n\n    def get(self, key: int) -> int:\n        return -1\n\n    def put(self, key: int, value: int) -> None:\n        pass\n\nlru = LRUCache(2)\nprint(lru.get(1))`,
+          java: `import java.util.*;\n\nclass LRUCache {\n    public LRUCache(int capacity) {}\n    public int get(int key) { return -1; }\n    public void put(int key, int value) {}\n    public static void main(String[] args) {\n        System.out.println("Implement O(1) LRU Cache");\n    }\n}`,
+          cpp: `#include <iostream>\nusing namespace std;\n\nint main() {\n    cout << "Implement O(1) LRU Cache" << endl;\n    return 0;\n}`,
+        },
+        sampleInput: 'capacity=2, put(1,10), put(2,20), get(1), put(3,30), get(2)',
+        sampleOutput: '10, -1',
+      },
+      {
+        title: 'Course Schedule Cycle Detection',
+        difficulty: 'Advanced',
+        description:
+          'There are numCourses courses labeled 0 to numCourses - 1. Given prerequisites[i] = [a, b] meaning you must take b before a, determine if it is possible to finish all courses.',
+        constraints: ['1 <= numCourses <= 2000', 'Target Time: O(V + E) using Kahn BFS or 3-state DFS'],
+        starterCode: {
+          javascript: `function canFinish(numCourses, prerequisites) {\n  // Detect cycle in directed graph via Kahn's algorithm or DFS\n  return true;\n}\n\nconsole.log(canFinish(2, [[1,0]]));\nconsole.log(canFinish(2, [[1,0],[0,1]]));`,
+          python: `def can_finish(num_courses: int, prerequisites: list[list[int]]) -> bool:\n    # Detect cycle in directed graph\n    pass\n\nprint(can_finish(2, [[1,0]]))`,
+          java: `import java.util.*;\n\nclass Solution {\n    public static boolean canFinish(int numCourses, int[][] prerequisites) {\n        return true;\n    }\n    public static void main(String[] args) {\n        System.out.println(canFinish(2, new int[][]{{1,0}}));\n    }\n}`,
+          cpp: `#include <iostream>\nusing namespace std;\n\nint main() {\n    cout << "Implement Course Schedule" << endl;\n    return 0;\n}`,
+        },
+        sampleInput: 'numCourses = 2, prerequisites = [[1,0],[0,1]]',
+        sampleOutput: 'false',
+      },
+      {
+        title: 'Minimum Coin Change (Dynamic Programming)',
+        difficulty: 'Beginner',
+        description:
+          'Given an array of coin denominations coins and an integer amount, return the fewest number of coins needed to make up that amount, or -1 if impossible.',
+        constraints: ['1 <= coins.length <= 12', '0 <= amount <= 10^4', 'Target Time: O(amount * coins.length)'],
+        starterCode: {
+          javascript: `function coinChange(coins, amount) {\n  // Bottom-up 1D DP\n  return -1;\n}\n\nconsole.log(coinChange([1, 2, 5], 11));`,
+          python: `def coin_change(coins: list[int], amount: int) -> int:\n    # Bottom-up 1D DP\n    pass\n\nprint(coin_change([1, 2, 5], 11))`,
+          java: `import java.util.*;\n\nclass Solution {\n    public static int coinChange(int[] coins, int amount) {\n        return -1;\n    }\n    public static void main(String[] args) {\n        System.out.println(coinChange(new int[]{1, 2, 5}, 11));\n    }\n}`,
+          cpp: `#include <iostream>\nusing namespace std;\n\nint main() {\n    cout << "Implement Coin Change" << endl;\n    return 0;\n}`,
+        },
+        sampleInput: 'coins = [1, 2, 5], amount = 11',
+        sampleOutput: '3',
+      },
+    ];
+
+    const diffLower = (difficulty || 'Intermediate').toLowerCase();
+    const diffFiltered = problems.filter((p) => {
+      if (diffLower.includes('begin') || diffLower.includes('easy')) return p.difficulty === 'Beginner' || p.difficulty === 'Intermediate';
+      if (diffLower.includes('adv') || diffLower.includes('hard')) return p.difficulty === 'Advanced' || p.difficulty === 'Intermediate';
+      return true;
+    });
+    const pool = diffFiltered.length > 0 ? diffFiltered : problems;
+    const topicHint = `${customTopics.join(' ')} ${resumeText}`.toLowerCase();
+    // Vary selection deterministically+randomly per session while respecting topic hints occasionally
+    const pickedIdx = Math.floor(Math.random() * pool.length);
+    if (topicHint.includes('cache') && Math.random() < 0.25) {
+      return problems.find((p) => p.title.includes('LRU')) || pool[pickedIdx];
+    }
+    return pool[pickedIdx];
+  }
+
+  /**
+   * Generates dynamic mock interview questions tailored to the candidate's target role, track, and resume.
    */
   public static async generateMockQuestions(params: {
     title?: string;
@@ -2298,82 +2649,132 @@ console.log("Execution output:", demo);`,
     targetJD?: string;
     roundType?: string;
     interviewerPersona?: string;
+    codingProblemTitle?: string;
   }): Promise<MockInterviewQuestion[]> {
     const count = Math.min(10, Math.max(3, params.questionCount || 5));
-    const isHR = params.type === 'HR' || params.roundType === 'hiring_manager';
-    const isBehavioral = params.type === 'Behavioral' || params.roundType === 'behavioral';
-    const isTechnical = params.type === 'Technical' || params.roundType === 'technical_stack' || params.roundType === 'project_deep_dive';
+    const typeLower = (params.type || 'Technical').toLowerCase();
+    const roundLower = (params.roundType || '').toLowerCase();
+
+    const isCoding = typeLower === 'coding' || typeLower.includes('coding');
+    const isHR = typeLower === 'hr' || (!isCoding && roundLower === 'hiring_manager');
+    const isBehavioral = typeLower === 'behavioral' || (!isCoding && typeLower !== 'hr' && roundLower === 'behavioral');
+    const isJava = typeLower.includes('java');
+    const isPython = typeLower.includes('python');
+    const isDatabase = typeLower.includes('database') || typeLower.includes('sql');
+    const isAIML = typeLower.includes('ai') || typeLower.includes('ml');
+    const isFrontend = typeLower.includes('frontend');
+    const isBackend = typeLower.includes('backend');
+    const isFullStack = typeLower.includes('full stack');
+    const isCustom = typeLower === 'custom';
+
+    const insights = this.extractResumeHighlights(params.resumeText, [
+      ...(params.customTopics || []),
+      ...(params.candidateSkills || []),
+    ]);
 
     const customFocus = params.customTopics && params.customTopics.length > 0
-      ? `Custom Focus Topics & Technologies to specifically evaluate: ${params.customTopics.join(', ')}`
+      ? `Candidate Skills / Custom Topics to emphasize: ${params.customTopics.join(', ')}`
+      : insights.skills.length > 0
+      ? `Skills extracted from Resume: ${insights.skills.join(', ')}`
       : '';
 
     const companyFocus = params.company && params.company !== 'General'
-      ? `Target Company: ${params.company} (tailor questions to their authentic hiring standards and question patterns)`
+      ? `Target Company: ${params.company} (match their authentic engineering/interview style)`
       : '';
 
-    const expLevel = params.experienceLevel || 'Fresher (0-1 yrs)';
+    const expLevel = params.experienceLevel || 'Fresher';
 
     const resumeContext = params.resumeText
       ? `
-CANDIDATE'S ACTUAL UPLOADED RESUME:
+CANDIDATE'S RESUME / PROFILE:
 """
 ${params.resumeText.slice(0, 3500)}
 """
+${insights.projects.length > 0 ? `Detected Projects: ${insights.projects.join(', ')}` : ''}
 ${params.targetJD ? `TARGET JOB DESCRIPTION / FOCUS: "${params.targetJD}"` : ''}
 
-CRITICAL RESUME-DRIVEN INTERVIEW RULES:
-1. You MUST directly probe the candidate's actual projects, listed technologies, frameworks, and architecture choices mentioned on their resume!
-2. Reference their actual projects or experiences by name (e.g. "I noticed on your resume you developed [Project Name]...").
-3. Probe technical depth, concurrency, state management, schema design, and trade-offs.
-4. For behavioral questions, probe specific team situations from their background in STAR format.
+RESUME-DRIVEN RULES:
+- Directly reference their actual listed projects or tech stack (ONLY things actually present above—never invent projects or companies!).
 `
       : '';
 
-    const prompt = `You are an elite Senior Technical Placement Interviewer and Engineering Manager conducting an interview for:
-Interview Title: "${params.title || params.role}"
-Target Role: ${params.role}
-Candidate Experience Level: ${expLevel}
+    let trackDirective = '';
+    if (isCoding) {
+      trackDirective = `
+- THIS IS A LIVE CODING & ALGORITHMIC PROBLEM-SOLVING ROUND!
+- Question 1 (warm-up, requiresCode: false): Brief algorithmic warm-up or walkthrough of their preferred language & complexity mindset (referencing resume/project briefly if available).
+- Remaining questions (requiresCode: true): Distinct live coding challenges, algorithmic implementations, optimization/edge-case implementations${params.codingProblemTitle ? ` (including solving "${params.codingProblemTitle}" in the live editor)` : ''}.
+- NEVER ask generic system-architecture essay questions or HR questions here! Every question must focus on DSA, algorithms, data structures, or live code implementation.`;
+    } else if (isHR) {
+      trackDirective = `
+- THIS IS STRICTLY AN HR & CAREER FIT ROUND!
+- Ask ONLY HR & career-story questions (background motivation, strengths/growth areas, role fit at ${params.company || 'the company'}, teamwork, handling pressure, 3-year vision).
+- NEVER ask coding, algorithms, SQL, OS, or system architecture questions! Set requiresCode: false on every question and category: "HR".`;
+    } else if (isBehavioral) {
+      trackDirective = `
+- THIS IS STRICTLY A BEHAVIORAL STAR ROUND!
+- Ask ONLY STAR-format situational questions (handling disagreements, tough bugs, tight deadlines, ownership, leadership, failures) tied to their actual projects/background where possible.
+- NEVER ask coding or OS/DBMS trivia! Set requiresCode: false on every question and category: "Behavioral".`;
+    } else if (isJava) {
+      trackDirective = `
+- THIS IS A JAVA & SPRING BOOT SPECIALIST ROUND!
+- Focus on JVM memory model & GC, multithreading (synchronized/volatile/CompletableFuture/Virtual Threads), Collections/ConcurrentHashMap internals, Java Streams, and Spring Boot (@Transactional, IoC/DI, REST/JPA N+1).
+- Set requiresCode: true ONLY if a question explicitly asks them to write/debug Java code; otherwise false.`;
+    } else if (isPython) {
+      trackDirective = `
+- THIS IS A PYTHON BACKEND & INTERNALS ROUND!
+- Focus on GIL vs multiprocessing, asyncio event loop, generators/iterators, decorators/closures, memory management/copy semantics, and Django/FastAPI/Pydantic patterns.
+- Set requiresCode: true ONLY if a question asks them to write a Python snippet/function; otherwise false.`;
+    } else if (isDatabase) {
+      trackDirective = `
+- THIS IS A DATABASE & DATA MODELING ROUND!
+- Cover B+ Tree / composite index design, query optimization & EXPLAIN plans, ACID isolation levels & MVCC/locks, SQL vs NoSQL schema modeling, sharding/replication, plus optionally 1 practical SQL query writing question (requiresCode: true).`;
+    } else if (isAIML) {
+      trackDirective = `
+- THIS IS AN AI / ML ENGINEERING ROUND!
+- Cover Transformers & self-attention, RAG (chunking, embeddings, hybrid search, hallucination control), fine-tuning (LoRA/QLoRA) vs prompting, evaluation metrics on imbalanced data, bias-variance, and LLM inference latency/quantization. Set requiresCode: false unless coding a metric/function.`;
+    } else if (isFrontend) {
+      trackDirective = `
+- THIS IS A FRONTEND ENGINEERING ROUND!
+- Cover React reconciliation/Fiber, hooks & state management trade-offs, TypeScript type system, Critical Rendering Path, Core Web Vitals, CSS Grid/Flexbox/stacking contexts, XSS/CORS security, and bundle/perf optimization.`;
+    } else if (isBackend) {
+      trackDirective = `
+- THIS IS A BACKEND & DISTRIBUTED SYSTEMS ROUND!
+- Cover API architecture, rate limiting, Redis caching & stampedes, Kafka/RabbitMQ messaging, connection pooling, optimistic vs pessimistic locking, Saga/Circuit Breaker patterns, and observability.`;
+    } else if (isFullStack) {
+      trackDirective = `
+- THIS IS A FULL STACK ENGINEERING ROUND!
+- Cover end-to-end architecture across React UI/state, Node/API contracts (REST/GraphQL), authentication (JWT/HttpOnly cookies/CSRF), SQL vs MongoDB modeling, caching, and deployment.`;
+    } else if (isCustom) {
+      trackDirective = `
+- THIS IS A CUSTOM SPECIALIZED ROUND!
+- Tailor every question specifically to the candidate's custom focus topics (${params.customTopics?.join(', ') || insights.skills.join(', ') || params.role}) and actual resume projects.`;
+    } else {
+      trackDirective = `
+- THIS IS A TECHNICAL ARCHITECTURE & CORE CS ROUND (${roundLower || 'technical_stack'}) FOR ${params.role}!
+- Focus on system architecture, core CS (OS, DBMS, CN, OOP), concurrency, API design, and real engineering trade-offs from their projects. Keep requiresCode: false (conceptual/verbal discussion, NOT a live coding compiler test unless explicitly asking to implement code).`;
+    }
+
+    const prompt = `You are a Senior Engineering Interviewer conducting a realistic ${params.type} interview.
+Target Role: ${params.role} | Experience: ${expLevel} | Difficulty: ${params.difficulty}
 ${companyFocus}
 ${customFocus}
 ${resumeContext}
-MANDATORY ROUND TYPE: ${(params.roundType || params.type).toUpperCase()} ROUND
-Difficulty Level: ${params.difficulty}
-Number of questions needed: ${count}
-Session Seed: ${Date.now()}_${Math.random().toString(36).substring(7)}
+ROUND DIRECTIVE (${params.type.toUpperCase()}):
+${trackDirective}
 
-CRITICAL TRACK RULES:
-${isHR ? `
-- THIS IS STRICTLY AN HR ROUND!
-- You MUST ONLY ask HR questions (e.g. tell me about yourself, 3-5 year career vision, why our company, greatest technical strengths and weaknesses, handling stress, team culture).
-- NEVER ask any programming, coding, algorithms, or OS/DBMS technical questions! Every question's category MUST be "HR".
-` : isBehavioral ? `
-- THIS IS STRICTLY A BEHAVIORAL ROUND!
-- You MUST ONLY ask STAR format situational behavioral questions (e.g. describing a challenging bug you diagnosed, handling a technical disagreement with a teammate, adapting to unfamiliar technology under a tight deadline, learning from a project setback).
-- Every question's category MUST be "Behavioral".
-` : isTechnical ? `
-- THIS IS A 100% TECHNICAL ROUND FOR THE ROLE: ${params.role} (${expLevel})!
-${customFocus ? `- PRIORITY: Ensure at least 60% of questions directly evaluate these candidate-specified topics: ${params.customTopics?.join(', ')}` : ''}
-- If Role is "Full Stack Developer": Ask strictly on React state/Virtual DOM, Node.js event loop, REST/GraphQL API design, SQL vs NoSQL, authentication (JWT/OAuth), and full-stack performance.
-- If Role is "DSA & Algorithmic Specialist": Ask strictly on Data Structures (Trees, Graphs, Tries, Heaps, Stacks) and algorithmic paradigms (Dynamic Programming, Binary Search, Sliding Window, Graph traversals, time/space trade-offs).
-- If Role is "Backend Engineer": Ask strictly on Microservices, Database indexing/concurrency, Message brokers (Kafka/RabbitMQ), API rate limiting, and caching (Redis).
-- If Role is "Frontend Engineer": Ask strictly on React reconciliation/Virtual DOM, TypeScript generics, Core Web Vitals, browser rendering pipeline, CSS layout mechanics, and security (CORS/XSS).
-- If Role is "SDE-1": Ask on Core CS (Operating Systems, DBMS, OOP, Computer Networks) and fundamental DSA.
-` : `
-- THIS IS A MIXED CAMPUS PLACEMENT SIMULATION ROUND (Technical + Behavioral + HR)!
-- Alternate between role-specific technical questions for ${params.role} and behavioral/HR scenario questions.
-`}
-
-Generate exactly ${count} distinct, professional, realistic questions. Do NOT repeat questions from previous sessions.
+Generate exactly ${count} fresh, non-repetitive, realistic interview questions (Session Seed: ${Date.now()}_${Math.random().toString(36).slice(2, 7)}).
+Make Question 1 an authentic, track-appropriate opener (do NOT use generic clichés).
 Return ONLY a valid JSON array matching this schema:
 [
   {
     "id": "q1",
-    "question": "The interview question text",
-    "category": "${isHR ? 'HR' : isBehavioral ? 'Behavioral' : 'Technical'}",
+    "question": "The specific interview question text",
+    "category": "${isHR ? 'HR' : isBehavioral ? 'Behavioral' : isCoding ? 'Coding' : params.type || 'Technical'}",
     "difficulty": "${params.difficulty}",
-    "expectedPoints": ["key point candidate should cover 1", "key point 2", "key point 3"],
-    "sampleFollowUp": "Optional follow-up question the interviewer might ask"
+    "requiresCode": false,
+    "expectedPoints": ["key point 1", "key point 2", "key point 3"],
+    "sampleFollowUp": "Realistic follow-up probe"
   }
 ]`;
 
@@ -2388,37 +2789,44 @@ Return ONLY a valid JSON array matching this schema:
 
         const parsed = JSON.parse(jsonStr);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          const introQ = {
-            id: 'q-intro-1',
-            question:
-              "Tell me about yourself, your background in Computer Science, and a brief overview of the key projects you've developed such as your salary or electricity usage tracker.",
-            category: 'Behavioral',
-            difficulty: 'Beginner',
-            expectedPoints: [
-              'Candidate background, education in Computer Science & engineering journey',
-              'Overview of core projects developed (e.g., Salary tracker, Electricity usage tracker)',
-              'Clear, articulate communication and structured self-introduction',
-            ],
-            sampleFollowUp: 'What motivated you to build the electricity usage tracker, and what was your primary architectural role?',
-          };
-          const nonIntro = parsed.filter((q) => !(q.question || '').toLowerCase().includes('yourself'));
-          const combined = [introQ, ...nonIntro].slice(0, count);
-
-          return combined.map((q, idx) => ({
-            id: q.id || `q-${idx + 1}`,
-            question: q.question,
-            category: q.category || (isHR ? 'HR' : isBehavioral ? 'Behavioral' : 'Technical'),
-            difficulty: q.difficulty || params.difficulty,
-            expectedPoints: q.expectedPoints || ['Clear problem breakdown', 'Demonstrate conceptual depth'],
-            sampleFollowUp: q.sampleFollowUp,
-          }));
+          return parsed.slice(0, count).map((q: any, idx: number) => {
+            const qText = String(q.question || '').trim();
+            const inferredCode =
+              !isHR &&
+              !isBehavioral &&
+              idx > 0 &&
+              (Boolean(q.requiresCode) ||
+                (isCoding && idx >= 1) ||
+                /\b(write a (function|method|query|sql|program)|implement (a|an|the)|code (this|a|an)|solve in (code|ide))\b/i.test(qText));
+            return {
+              id: q.id || `q-${idx + 1}`,
+              question: qText,
+              category: q.category || (isHR ? 'HR' : isBehavioral ? 'Behavioral' : isCoding ? 'Coding' : params.type || 'Technical'),
+              difficulty: q.difficulty || params.difficulty,
+              requiresCode: inferredCode,
+              expectedPoints: Array.isArray(q.expectedPoints) && q.expectedPoints.length > 0
+                ? q.expectedPoints
+                : ['Clear conceptual breakdown', 'Real-world engineering trade-offs'],
+              sampleFollowUp: q.sampleFollowUp,
+            };
+          });
         }
       } catch (e) {
         console.warn('[AIService] Failed to parse generateMockQuestions response, falling back.');
       }
     }
 
-    return this.fallbackMockQuestions(params.role, params.difficulty, params.type, count);
+    return this.fallbackMockQuestions({
+      role: params.role,
+      difficulty: params.difficulty,
+      type: params.type,
+      count,
+      company: params.company,
+      roundType: params.roundType,
+      customTopics: params.customTopics,
+      resumeText: params.resumeText,
+      codingProblemTitle: params.codingProblemTitle,
+    });
   }
 
   /**
@@ -2444,7 +2852,7 @@ Return ONLY a valid JSON array matching this schema:
       params.question.toLowerCase().includes('challenge');
 
     const prompt = `You are a fair, rigorous, evidence-based Technical Placement Interviewer and Engineering Manager evaluating a candidate's spoken mock interview response.
-Candidate Profile: Mohammed Hassan Ahmed, Computer Science & Engineering undergraduate student.
+Candidate Profile: Software engineering placement candidate.
 Target Role: ${params.role}
 Question: ${params.question}
 Category: ${params.category || 'Technical'}
@@ -2513,7 +2921,7 @@ Return ONLY a valid JSON object matching this schema:
   "recommendedTopics": ["Specific Topic 1", "Topic 2"]
 }`;
 
-    const text = await this.generateContentWithFallback(prompt, 7500);
+    const text = await this.generateContentWithFallback(prompt, 9500);
     if (text) {
       try {
         const parsed = this.extractJson(text);
@@ -2581,11 +2989,21 @@ Return ONLY a valid JSON object matching this schema:
     role: string;
     company?: string;
     roundType?: string;
+    subRoundType?: string;
+    difficulty?: string;
+    customTopics?: string[];
     resumeText?: string;
     questionNumber: number;
     totalQuestions: number;
     currentQuestion: string;
     candidateAnswer: string;
+    upcomingPlannedQuestion?: {
+      question?: string;
+      category?: string;
+      expectedPoints?: string[];
+      sampleFollowUp?: string;
+      requiresCode?: boolean;
+    };
     conversationHistory?: Array<{ role: 'interviewer' | 'candidate'; text: string }>;
   }): Promise<{
     interviewerLeadIn: string;
@@ -2593,71 +3011,88 @@ Return ONLY a valid JSON object matching this schema:
     category: string;
     expectedPoints: string[];
     sampleFollowUp: string;
+    requiresCode: boolean;
   }> {
     const company = params.company || 'Tier-1 Tech';
     const role = params.role || 'Software Engineer';
+    const track = params.roundType || 'Technical';
+    const trackLower = track.toLowerCase();
+    const isCoding = trackLower === 'coding' || trackLower.includes('coding');
+    const isHR = trackLower === 'hr' || (!isCoding && params.subRoundType === 'hiring_manager');
+    const isBehavioral = trackLower === 'behavioral' || (!isCoding && !isHR && params.subRoundType === 'behavioral');
     const qNum = params.questionNumber;
 
     const resumeSnippet = (params.resumeText || '').slice(0, 2500);
-
     const historyText =
       params.conversationHistory && params.conversationHistory.length > 0
         ? params.conversationHistory.map((m) => `${m.role.toUpperCase()}: ${m.text}`).join('\n\n')
         : `INTERVIEWER: ${params.currentQuestion}\nCANDIDATE: ${params.candidateAnswer}`;
 
-    const prompt = `You are a Senior Software Engineer and Placement Interviewer at ${company} conducting a live technical interview for ${role}.
-You are in the middle of the interview (Question ${qNum} of ${params.totalQuestions || 5}).
+    const upcomingHint = params.upcomingPlannedQuestion?.question
+      ? `PLANNED NEXT TRACK TOPIC (use or adapt if ready to move to a new area): "${params.upcomingPlannedQuestion.question}"`
+      : '';
+
+    const prompt = `You are a Senior Software Engineer conducting a live ${track} interview at ${company} for ${role} (${params.difficulty || 'Intermediate'}).
+Turn: Question ${qNum} of ${params.totalQuestions || 5}.
 
 CRITICAL REAL-WORLD INTERVIEW RULES:
-1. DO NOT use pre-scripted or generic textbook questions!
-2. You MUST listen carefully to what the candidate JUST said in their latest answer:
-"${params.candidateAnswer}"
+1. STAY STRICTLY IN TRACK (${track.toUpperCase()}):
+   ${isHR ? '- HR round ONLY: focus on career motivation, ownership, collaboration, conflict handling, role fit. NEVER ask coding, algorithms, SQL, or OS/DBMS questions. Set requiresCode: false.' : ''}
+   ${isBehavioral ? '- BEHAVIORAL STAR round ONLY: probe Situation, Task, Action, Result from their actual experiences. NEVER ask coding/technical trivia. Set requiresCode: false.' : ''}
+   ${isCoding ? '- LIVE CODING round ONLY: either ask an optimization/edge-case coding follow-up or present a distinct algorithmic coding problem in the Coding IDE (set requiresCode: true).' : ''}
+   ${!isHR && !isBehavioral && !isCoding ? `- Stay strictly within "${track}"${params.customTopics?.length ? ` (${params.customTopics.join(', ')})` : ''}. Do NOT repeat earlier questions from conversation history.` : ''}
+2. ADAPT DIRECTLY TO CANDIDATE'S ANSWER & RESUME:
+   - Read what the candidate JUST said: "${params.candidateAnswer}"
+   - If they mentioned a specific project, tech choice, database, bottleneck, or STAR action, probe THAT point specifically—OR if you already covered that area, transition smoothly to a fresh question in the ${track} track.
+   - If their previous answer was short/incomplete, probe for a concrete example or trade-off rather than giving fake praise.
+3. NATURAL PROFESSIONAL LEAD-IN:
+   - Set "interviewerLeadIn" to a brief natural transition ("Got it.", "Alright.", "Understood.", "Makes sense.", "Interesting approach.")—never over-the-top flattery.
 
-3. LIVE ANALYSIS & DEEP PROBING:
-   - Identify specific technical claims, frameworks, architecture decisions, or omissions the candidate mentioned in their answer.
-   - Formulate the next question directly continuing the conversation:
-     * If they mentioned a technology (e.g. Redis, MongoDB, React, Node.js, microservices), probe their real-world trade-offs, failure modes, ACID guarantees, or race conditions!
-     * If their answer was surface-level, probe the underlying edge case or implementation detail.
-     * If Question 1 was high-level project architecture, Question 2 should naturally probe data consistency/concurrency, Question 3 probes runtime/language internals, Question 4 probes distributed failures, and Question 5 probes STAR behavioral ownership.
-4. NO FLUFFY PRAISE:
-   - Real interviewers DO NOT say "Great job! Amazing explanation!".
-   - Set "interviewerLeadIn" strictly to realistic, professional phrases: "Hmm, okay.", "Alright.", "Understood.", or "I see."
-   - Followed immediately by your sharp, authentic next question.
+CANDIDATE RESUME:
+${resumeSnippet || 'General Computer Science background.'}
+${upcomingHint}
 
-CANDIDATE'S RESUME CONTEXT:
-${resumeSnippet || 'Full stack & core computer science student background.'}
-
-RECENT INTERVIEW CONVERSATION:
+CONVERSATION HISTORY SO FAR:
 ${historyText}
 
-Return ONLY a valid JSON object matching this schema:
+Return ONLY valid JSON:
 {
-  "interviewerLeadIn": "Hmm, okay.",
-  "nextQuestion": "The specific live question probing what the candidate said and their resume.",
-  "category": "Architecture",
+  "interviewerLeadIn": "Alright.",
+  "nextQuestion": "Your next adaptive question.",
+  "category": "${isHR ? 'HR' : isBehavioral ? 'Behavioral' : isCoding ? 'Coding' : track}",
+  "requiresCode": ${isCoding ? 'true' : 'false'},
   "expectedPoints": ["Key point 1", "Key point 2"],
   "sampleFollowUp": "Optional follow-up probe"
 }`;
 
-    const text = await this.generateContentWithFallback(prompt, 7500);
+    const text = await this.generateContentWithFallback(prompt, 9500);
     if (text) {
       try {
         const parsed = this.extractJson(text);
         if (parsed.nextQuestion) {
-          const leadIns = ['Hmm, okay.', 'Alright.', 'Understood.', 'I see.'];
-          const cleanLeadIn = leadIns.some((l) => parsed.interviewerLeadIn?.includes(l.replace('.', '')))
-            ? parsed.interviewerLeadIn
-            : leadIns[qNum % leadIns.length];
+          const cleanLeadIn = parsed.interviewerLeadIn && String(parsed.interviewerLeadIn).length <= 45
+            ? String(parsed.interviewerLeadIn).trim()
+            : ['Got it.', 'Alright.', 'Understood.', 'Makes sense.'][qNum % 4];
+
+          const nextText = String(parsed.nextQuestion).trim();
+          const requiresCode =
+            !isHR &&
+            !isBehavioral &&
+            (Boolean(parsed.requiresCode) ||
+              isCoding ||
+              Boolean(params.upcomingPlannedQuestion?.requiresCode && nextText === params.upcomingPlannedQuestion?.question) ||
+              /\b(write a (function|method|query|sql|program)|implement (a|an|the)|code (this|a|an)|solve in (code|ide))\b/i.test(nextText));
 
           return {
             interviewerLeadIn: cleanLeadIn,
-            nextQuestion: parsed.nextQuestion,
-            category: parsed.category || 'Technical Deep Dive',
-            expectedPoints: Array.isArray(parsed.expectedPoints)
+            nextQuestion: nextText,
+            category: parsed.category || (isHR ? 'HR' : isBehavioral ? 'Behavioral' : isCoding ? 'Coding' : track),
+            requiresCode,
+            expectedPoints: Array.isArray(parsed.expectedPoints) && parsed.expectedPoints.length > 0
               ? parsed.expectedPoints
-              : ['Clear technical rationale', 'Edge case trade-offs'],
+              : ['Clear rationale grounded in the question', 'Practical edge cases & trade-offs'],
             sampleFollowUp:
-              parsed.sampleFollowUp || 'Walk me through the failure modes and trade-offs of this approach.',
+              parsed.sampleFollowUp || 'Can you walk me through any edge cases or trade-offs with that?',
           };
         }
       } catch (e) {
@@ -2671,78 +3106,218 @@ Return ONLY a valid JSON object matching this schema:
   private static fallbackDynamicNextQuestion(params: {
     role: string;
     company?: string;
+    roundType?: string;
+    subRoundType?: string;
+    resumeText?: string;
+    customTopics?: string[];
     questionNumber: number;
     totalQuestions: number;
     currentQuestion: string;
     candidateAnswer: string;
+    upcomingPlannedQuestion?: {
+      question?: string;
+      category?: string;
+      expectedPoints?: string[];
+      sampleFollowUp?: string;
+      requiresCode?: boolean;
+    };
+    conversationHistory?: Array<{ role: 'interviewer' | 'candidate'; text: string }>;
   }): {
     interviewerLeadIn: string;
     nextQuestion: string;
     category: string;
     expectedPoints: string[];
     sampleFollowUp: string;
+    requiresCode: boolean;
   } {
     const qNum = params.questionNumber;
     const ans = (params.candidateAnswer || '').toLowerCase();
-    const prevQ = (params.currentQuestion || '').toLowerCase();
-    const leadIns = ['Hmm, okay.', 'Alright.', 'Understood.', 'I see.'];
+    const track = params.roundType || 'Technical';
+    const trackLower = track.toLowerCase();
+    const isCoding = trackLower === 'coding' || trackLower.includes('coding');
+    const isHR = trackLower === 'hr' || (!isCoding && params.subRoundType === 'hiring_manager');
+    const isBehavioral = trackLower === 'behavioral' || (!isCoding && !isHR && params.subRoundType === 'behavioral');
+    const leadIns = ['Got it.', 'Alright.', 'Understood.', 'Makes sense.', 'Okay, interesting.'];
     const leadIn = leadIns[qNum % leadIns.length];
 
-    // Stage 2: Runtime Internals & Core Stack Execution
-    if (qNum === 2) {
+    const alreadyAskedText = (params.conversationHistory || [])
+      .filter((m) => m.role === 'interviewer')
+      .map((m) => m.text.toLowerCase())
+      .join(' ');
+
+    const insights = this.extractResumeHighlights(params.resumeText, params.customTopics);
+    const primaryProject = insights.projects[0];
+
+    // Helper: pick an adaptive contextual follow-up ONLY when relevant to candidate's actual answer AND track, without repeating
+    const contextualCandidates: Array<{
+      keywords: string[];
+      allowed: boolean;
+      question: string;
+      category: string;
+      expectedPoints: string[];
+      sampleFollowUp: string;
+      requiresCode: boolean;
+    }> = [
+      {
+        keywords: ['redis', 'cache', 'caching', 'memcached'],
+        allowed: !isHR && !isBehavioral && !isCoding && !alreadyAskedText.includes('cache invalidation'),
+        question:
+          'You brought up caching—how would you keep the cache consistent with the database during concurrent updates, and how do you guard against a cache stampede if a hot key expires?',
+        category: track,
+        expectedPoints: ['Cache-aside vs write-through trade-offs', 'Mutex/singleflight lock or probabilistic early expiration for stampede prevention', 'TTL & explicit invalidation strategy'],
+        sampleFollowUp: 'What eviction policy (LRU vs LFU) fits that workload better?',
+        requiresCode: false,
+      },
+      {
+        keywords: ['mongodb', 'nosql', 'postgres', 'mysql', 'sql', 'database', 'schema', 'index'],
+        allowed: !isHR && !isBehavioral && !isCoding && !alreadyAskedText.includes('query plan') && !alreadyAskedText.includes('indexing'),
+        question:
+          'Following up on your database point—how do you verify whether an important query is using the right index, and what factors guide your column order in a composite index?',
+        category: isDatabaseOrTech(trackLower) ? 'Database' : track,
+        expectedPoints: ['EXPLAIN / EXPLAIN ANALYZE scan vs index seek inspection', 'Leftmost prefix rule and high-cardinality columns first', 'Write-amplification vs read-latency trade-offs'],
+        sampleFollowUp: 'How would you handle schema migration without locking production writes?',
+        requiresCode: false,
+      },
+      {
+        keywords: ['react', 'component', 'hook', 'useeffect', 'state', 'redux', 'zustand', 'dom', 'next'],
+        allowed: (trackLower.includes('frontend') || trackLower.includes('full stack') || trackLower === 'technical' || trackLower === 'custom') && !alreadyAskedText.includes('re-render'),
+        question:
+          'Since you mentioned React/frontend state—what causes unnecessary component re-renders at scale, and when do you reach for selector-based stores or memoization instead of Context?',
+        category: track,
+        expectedPoints: ['Reference equality changes in Context values triggering full consumer subtree updates', 'Selector subscriptions (Zustand/Redux) vs useMemo/React.memo', 'Avoiding premature memoization overhead'],
+        sampleFollowUp: 'How do you profile render bottlenecks in React DevTools?',
+        requiresCode: false,
+      },
+      {
+        keywords: ['jwt', 'auth', 'oauth', 'token', 'session', 'cookie', 'security'],
+        allowed: !isHR && !isBehavioral && !isCoding && !alreadyAskedText.includes('refresh token'),
+        question:
+          'You touched on authentication—how do you handle token revocation and protect users against XSS and CSRF when managing access and refresh tokens?',
+        category: track,
+        expectedPoints: ['Short-lived access tokens + HttpOnly, Secure, SameSite cookies', 'Refresh token rotation & server-side revocation list for logout/compromise', 'Never storing sensitive tokens in localStorage if XSS risk exists'],
+        sampleFollowUp: 'What breaks if you scale stateless JWT verification across multiple regions?',
+        requiresCode: false,
+      },
+      {
+        keywords: ['thread', 'lock', 'concurrent', 'async', 'await', 'promise', 'event loop', 'gil'],
+        allowed: !isHR && !isBehavioral && !isCoding && !alreadyAskedText.includes('deadlock') && !alreadyAskedText.includes('race condition'),
+        question:
+          'On concurrency and execution—what happens under load when multiple tasks compete for shared state or I/O, and how do you avoid race conditions or starving the event loop/threads?',
+        category: track,
+        expectedPoints: ['Identifying shared mutable state and critical sections', 'Offloading CPU-bound work vs non-blocking I/O', 'Synchronization/atomic guarantees or idempotent retries'],
+        sampleFollowUp: 'How would you reproduce and test an intermittent race condition?',
+        requiresCode: false,
+      },
+      {
+        keywords: ['rag', 'llm', 'embedding', 'vector', 'fine-tune', 'model', 'prompt', 'transformer'],
+        allowed: trackLower.includes('ai') || trackLower.includes('ml') || trackLower === 'custom',
+        question:
+          'Building on that ML/LLM workflow—how would you measure retrieval accuracy and reduce hallucinations when user queries are ambiguous or out-of-domain?',
+        category: 'AI/ML',
+        expectedPoints: ['Hybrid retrieval (dense embeddings + BM25) and reranking', 'Strict grounding citations, confidence thresholds, and eval sets (Faithfulness/Context Recall)', 'Chunking boundary & overlap tuning'],
+        sampleFollowUp: 'When does retrieval optimization outperform fine-tuning the base model?',
+        requiresCode: false,
+      },
+      {
+        keywords: ['bug', 'production', 'team', 'conflict', 'deadline', 'lead', 'mentor', 'fail'],
+        allowed: (isHR || isBehavioral || qNum >= (params.totalQuestions || 5)) && !alreadyAskedText.includes('measurable result'),
+        question:
+          'Looking closely at that situation you shared—what was the hardest trade-off or pushback you faced, what concrete action did you personally own, and what measurable result came out of it?',
+        category: isHR ? 'HR' : 'Behavioral',
+        expectedPoints: ['Specific personal Action rather than vague team effort ("we")', 'Quantifiable or concrete Result', 'Retrospective learning applied afterward'],
+        sampleFollowUp: 'If you had to redo that project today, what would you handle differently from day one?',
+        requiresCode: false,
+      },
+    ];
+
+    function isDatabaseOrTech(t: string): boolean {
+      return t.includes('database') || t.includes('sql') || t.includes('backend') || t.includes('full stack');
+    }
+
+    // In Coding round after candidate already submitted code or approach on a problem, ask optimization/edge-case probe or move to next coding prompt
+    if (isCoding && qNum === 3 && ans.length > 40 && !alreadyAskedText.includes('edge case')) {
       return {
         interviewerLeadIn: leadIn,
         nextQuestion:
-          'Let’s look at runtime internals. In your core stack (such as Node.js or Java), how does the runtime handle asynchronous non-blocking I/O, and what happens when the event loop or thread pool is exhausted by a CPU-heavy task?',
-        category: 'Runtime Internals & Architecture',
-        expectedPoints: ['Event loop phases (timers, poll, check)', 'libuv worker threads or clustering for CPU-bound computations'],
-        sampleFollowUp: 'How do you monitor event loop lag in production?',
+          'Now refine or test your implementation in the Coding IDE for tricky edge cases (empty inputs, duplicates, negative/extreme bounds). What is your exact time and auxiliary space complexity, and can we optimize memory usage further?',
+        category: 'Coding',
+        expectedPoints: [
+          'Explicit time & auxiliary space Big-O analysis',
+          'Handling boundary conditions cleanly in code',
+          'Discussing in-place or lower-space optimizations',
+        ],
+        sampleFollowUp: 'How would your code behave if input size grows to 10^7 items or streams continuously?',
+        requiresCode: true,
       };
     }
 
-    // Stage 3: Concurrency, Databases & Locking Mechanics
-    if (qNum === 3) {
+    // Prefer planned track question most of the time so rounds stay cleanly structured, while ~45% of turns dive into an adaptive keyword follow-up when matched!
+    const matchedFollowUp = contextualCandidates.find(
+      (c) => c.allowed && c.keywords.some((kw) => ans.includes(kw))
+    );
+
+    if (matchedFollowUp && (!params.upcomingPlannedQuestion?.question || qNum % 2 === 1)) {
+      return {
+        interviewerLeadIn: leadIn,
+        nextQuestion: matchedFollowUp.question,
+        category: matchedFollowUp.category,
+        expectedPoints: matchedFollowUp.expectedPoints,
+        sampleFollowUp: matchedFollowUp.sampleFollowUp,
+        requiresCode: matchedFollowUp.requiresCode,
+      };
+    }
+
+    // Use the session's pre-generated track-specific planned question!
+    const planned = params.upcomingPlannedQuestion;
+    if (planned && planned.question) {
+      const transitionLead = primaryProject && qNum === 2 && !alreadyAskedText.includes(primaryProject.toLowerCase())
+        ? `${leadIn} Thinking about your experience${insights.projects.length ? ` (including ${primaryProject})` : ''},`
+        : leadIn;
+
+      return {
+        interviewerLeadIn: transitionLead,
+        nextQuestion: planned.question,
+        category: planned.category || (isHR ? 'HR' : isBehavioral ? 'Behavioral' : isCoding ? 'Coding' : track),
+        expectedPoints: planned.expectedPoints && planned.expectedPoints.length > 0
+          ? planned.expectedPoints
+          : ['Clear technical reasoning', 'Concrete examples and trade-offs'],
+        sampleFollowUp: planned.sampleFollowUp || 'Can you walk me through an example or edge case?',
+        requiresCode: Boolean(planned.requiresCode) && !isHR && !isBehavioral,
+      };
+    }
+
+    // Last-resort track-aware fallback
+    if (isHR || isBehavioral) {
       return {
         interviewerLeadIn: leadIn,
         nextQuestion:
-          'Regarding the database layer and real-time updates: how do you manage transactions under high concurrency? Walk me through how you choose between optimistic versus pessimistic locking to avoid deadlocks.',
-        category: 'Concurrency & ACID Transactions',
-        expectedPoints: ['Isolation levels (Read Committed vs Serializable)', 'Deadlock detection, lock timeouts and rollback mechanics'],
-        sampleFollowUp: 'How does indexing impact write throughput when table sizes cross millions of rows?',
+          'Tell me about a time you had to quickly adapt to unfamiliar requirements or resolve a disagreement with a teammate. What was your exact action and the outcome?',
+        category: isHR ? 'HR' : 'Behavioral',
+        expectedPoints: ['STAR structure (Situation, Task, Action, Result)', 'Clear personal ownership', 'Measurable outcome & reflection'],
+        sampleFollowUp: 'What did you change in your workflow afterward?',
+        requiresCode: false,
       };
     }
 
-    // Stage 4: Distributed Systems, Queues & Zero-Downtime Reliability (Never duplicate locking!)
-    if (qNum === 4) {
-      if (ans.includes('redis') || ans.includes('cache')) {
-        return {
-          interviewerLeadIn: leadIn,
-          nextQuestion:
-            'You mentioned caching and performance. When scaling distributed microservices, how do you handle cache invalidation and ensure strong consistency when the underlying database write fails during peak load?',
-          category: 'Distributed Caching & Scale',
-          expectedPoints: ['Cache invalidation strategies (write-through vs cache-aside)', 'Handling stale reads under race conditions'],
-          sampleFollowUp: 'What eviction policy would you configure (LRU vs LFU) for high volatility data?',
-        };
-      }
-
+    if (isCoding) {
       return {
         interviewerLeadIn: leadIn,
         nextQuestion:
-          'When scaling your platform with microservices or event-driven queues, how do you handle service outages, circuit breakers, and database consistency to ensure zero-downtime reliability?',
-        category: 'Distributed Systems & Reliability',
-        expectedPoints: ['Circuit breaker pattern (Closed, Open, Half-Open)', 'Dead-letter queues and idempotency keys', 'Zero-downtime deployment (blue-green / rolling)'],
-        sampleFollowUp: 'How do you guarantee exactly-once processing versus at-least-once processing?',
+          'In the Coding IDE, implement a function to check if a string of brackets "()[]{}" is balanced, or optimize an O(n) sliding-window/hash-map problem of your choice, and explain the time/space trade-offs.',
+        category: 'Coding',
+        expectedPoints: ['Correct stack / hash-map invariant', 'O(n) optimal runtime', 'Boundary test handling'],
+        sampleFollowUp: 'How would you handle streaming characters one at a time?',
+        requiresCode: true,
       };
     }
 
-    // Stage 5+: Behavioral & Leadership (STAR Method)
     return {
       interviewerLeadIn: leadIn,
-      nextQuestion:
-        'Tell me about a specific time in your past projects where a major technical bug made it into production or testing, or you had a technical disagreement with a teammate. What was the situation, your exact action, and the outcome?',
-      category: 'Behavioral & Leadership (STAR Method)',
-      expectedPoints: ['STAR storytelling (Situation, Task, Action, Result)', 'Humility, root cause ownership, and blameless postmortem'],
-      sampleFollowUp: 'What preventative measure did you put in place to ensure that specific failure never recurred?',
+      nextQuestion: `Let's switch to ${track} depth: what was the hardest technical bottleneck or reliability issue you diagnosed in a recent build${primaryProject ? ` like ${primaryProject}` : ''}, and how did you verify the fix?`,
+      category: track,
+      expectedPoints: ['Root-cause diagnosis steps rather than guessing', 'Trade-offs evaluated before picking the fix', 'Verification metrics / testing strategy'],
+      sampleFollowUp: 'What monitoring or automated checks would catch that earlier in production?',
+      requiresCode: false,
     };
   }
 
@@ -2828,7 +3403,7 @@ Return ONLY a valid JSON object matching this schema:
       code.includes('std::sort') ||
       code.includes('sort(');
 
-    // 3. Binary Search Detection
+    // 3. Binary Search, Two-Pointer, Sliding Window & DP Detection
     const hasBinarySearch =
       (code.includes('while') &&
         (code.includes('mid') ||
@@ -2838,6 +3413,23 @@ Return ONLY a valid JSON object matching this schema:
           code.includes('start <= end'))) ||
       code.includes('bisect') ||
       code.includes('binary_search');
+
+    const hasTwoPointers =
+      !hasBinarySearch &&
+      ((/\bleft\b/.test(code) && /\bright\b/.test(code)) ||
+        (/\blow\b/.test(code) && /\bhigh\b/.test(code)) ||
+        (/\bl\s*<\s*r\b/.test(code) && (code.includes('l++') || code.includes('r--') || code.includes('l +='))));
+
+    const hasSlidingWindow =
+      (hasTwoPointers || /\bwindow\b/i.test(code) || /\bstart\b/.test(code)) &&
+      (code.includes('while') || code.includes('for')) &&
+      (/\bleft\s*(\+\+|\+=)/.test(code) || /\bstart\s*(\+\+|\+=)/.test(code) || /\bl\s*(\+\+|\+=)/.test(code));
+
+    const hasDpTable =
+      /\bdp\s*[\[\(]/i.test(code) ||
+      /\bmemo\b/i.test(code) ||
+      /\bdp\s*=\s*\[/.test(code) ||
+      /\bvector<.*>\s*dp\b/.test(code);
 
     // 4. Loop Detection across JS, Python, Java, C++
     const loopMatches =
@@ -2861,7 +3453,7 @@ Return ONLY a valid JSON object matching this schema:
       (code.match(/for\s+[^\n:]+:\s*\n\s+(?:[^\n]+\n\s+)*while\s+[^\n:]+:/) !== null) ||
       (code.match(/while\s+[^\n:]+:\s*\n\s+(?:[^\n]+\n\s+)*for\s+[^\n:]+:/) !== null);
 
-    const hasNestedLoop = hasBracketNestedLoop || hasPythonNestedLoop || loopMatches >= 2;
+    const hasNestedLoop = !hasSlidingWindow && (hasBracketNestedLoop || hasPythonNestedLoop);
 
     // 5. Recursion Detection
     const hasRecursion =
@@ -2879,6 +3471,15 @@ Return ONLY a valid JSON object matching this schema:
     if (hasBinarySearch) {
       timeComplexity = 'O(log n)';
       timeReason = 'Binary search interval halving at each iteration.';
+    } else if (hasSlidingWindow) {
+      timeComplexity = 'O(n)';
+      timeReason = 'Sliding window / two-pointer traversal where each element is processed at most twice.';
+    } else if (hasDpTable && hasNestedLoop) {
+      timeComplexity = 'O(n²)';
+      timeReason = '2D Dynamic Programming table transition across subproblem states.';
+    } else if (hasDpTable) {
+      timeComplexity = 'O(n)';
+      timeReason = '1D Dynamic Programming pass computing subproblem states iteratively or via memoization.';
     } else if (hasNestedLoop) {
       timeComplexity = 'O(n²)';
       timeReason = 'Quadratic execution due to nested iteration over elements.';
@@ -2897,7 +3498,13 @@ Return ONLY a valid JSON object matching this schema:
     let spaceComplexity = 'O(1)';
     let spaceReason = 'In-place variable manipulation with constant auxiliary memory.';
 
-    if (hasMapOrSet) {
+    if (hasDpTable) {
+      const is2DDp = /dp\s*\[[^\]]+\]\s*\[[^\]]+\]/.test(code) || /vector<\s*vector</.test(code);
+      spaceComplexity = is2DDp ? 'O(n²)' : 'O(n)';
+      spaceReason = is2DDp
+        ? '2D Dynamic Programming / memoization table storing subproblem states.'
+        : '1D Dynamic Programming / memoization array storing subproblem states.';
+    } else if (hasMapOrSet) {
       spaceComplexity = 'O(n)';
       spaceReason = 'Auxiliary hash table / dictionary storing elements or frequency mappings.';
     } else if (hasRecursion) {
@@ -2910,8 +3517,8 @@ Return ONLY a valid JSON object matching this schema:
 
     // Quality Score (1 - 10)
     let qualityScore = 8;
-    if (hasNestedLoop && !hasMapOrSet) qualityScore = 7;
-    if (hasBinarySearch || (hasMapOrSet && loopMatches === 1)) qualityScore = 9;
+    if (hasNestedLoop && !hasMapOrSet && !hasDpTable) qualityScore = 7;
+    if (hasBinarySearch || hasSlidingWindow || hasDpTable || (hasMapOrSet && loopMatches === 1)) qualityScore = 9;
     if (cleanLines.length >= 10 && !hasNestedLoop) qualityScore = 9;
     if (code.includes('console.log') || code.includes('print(') || code.includes('System.out')) {
       qualityScore = Math.max(7, qualityScore);
@@ -2928,7 +3535,7 @@ Return ONLY a valid JSON object matching this schema:
     if (hasBinarySearch) {
       potentialBugs.push('Integer overflow: in mid calculation, prefer `low + Math.floor((high - low) / 2)` over `(low + high) / 2`.');
     }
-    if (hasNestedLoop) {
+    if (hasNestedLoop && !hasDpTable) {
       potentialBugs.push('Time Limit Exceeded (TLE): O(n²) solution may time out on large MNC platform test cases (n > 10^5).');
     }
     if (potentialBugs.length === 0) {
@@ -2940,6 +3547,10 @@ Return ONLY a valid JSON object matching this schema:
     let timeComplexityExplanation = 'Because your algorithm iterates through the input elements in a single sequential pass, total operations scale directly with input size n. If input doubles from 100 to 200, time doubles proportionally.';
     if (hasBinarySearch) {
       timeComplexityExplanation = 'Because your code divides the search interval in half at every step (e.g. low + (high - low)/2), operations scale logarithmically O(log n). For 1,000,000 elements, it takes at most ~20 steps!';
+    } else if (hasSlidingWindow) {
+      timeComplexityExplanation = 'Because the sliding window / two pointers move monotonically across the input, each element is added and removed at most once, keeping total time linear O(n).';
+    } else if (hasDpTable) {
+      timeComplexityExplanation = 'Dynamic programming avoids recomputing overlapping subproblems by filling a state table once, yielding polynomial time bounded by the DP table dimensions.';
     } else if (hasNestedLoop) {
       timeComplexityExplanation = 'Because an outer loop runs n times and an inner loop runs n times, the total operations scale quadratically n × n. If input is 10,000 elements, it can take 100,000,000 operations, risking Time Limit Exceeded (TLE).';
     } else if (hasSorting) {
@@ -2949,7 +3560,9 @@ Return ONLY a valid JSON object matching this schema:
     }
 
     let spaceComplexityExplanation = 'Auxiliary memory usage is O(1) because your code only stores scalar tracking variables (pointers, counters). It does not allocate additional arrays or collections that grow with input size.';
-    if (hasMapOrSet) {
+    if (hasDpTable) {
+      spaceComplexityExplanation = 'Auxiliary space is used to maintain the DP / memoization table across subproblem states.';
+    } else if (hasMapOrSet) {
       spaceComplexityExplanation = 'Auxiliary space is O(n) because your hash table/dictionary stores seen elements or frequencies, requiring memory proportional to the number of distinct elements.';
     } else if (hasRecursion) {
       spaceComplexityExplanation = 'Auxiliary space is O(h) because each recursive call pushes a new frame onto the system call stack until reaching the base condition.';
@@ -3213,12 +3826,28 @@ Return ONLY a valid JSON object matching this schema:
     };
   }
 
-  private static fallbackMockQuestions(
-    role: string,
-    difficulty: string,
-    type: string,
-    count: number
-  ): MockInterviewQuestion[] {
+  private static fallbackMockQuestions(params: {
+    role: string;
+    difficulty: string;
+    type: string;
+    count: number;
+    company?: string;
+    roundType?: string;
+    customTopics?: string[];
+    resumeText?: string;
+    codingProblemTitle?: string;
+  }): MockInterviewQuestion[] {
+    const {
+      role,
+      difficulty,
+      type,
+      count,
+      company = 'the team',
+      roundType = '',
+      customTopics = [],
+      resumeText = '',
+      codingProblemTitle = '',
+    } = params;
     const FULL_STACK_QUESTIONS: MockInterviewQuestion[] = [
       {
         id: 'fs1',
@@ -4012,6 +4641,337 @@ Return ONLY a valid JSON object matching this schema:
       },
     ];
 
+    const CODING_QUESTIONS: MockInterviewQuestion[] = [
+      ...(codingProblemTitle
+        ? [
+            {
+              id: 'code-main-1',
+              question: `Open the Coding IDE and implement "${codingProblemTitle}". Start by outlining your brute-force vs optimal approach, write clean working code, run it against sample inputs, and state its exact time and space complexity.`,
+              category: 'Coding',
+              difficulty,
+              requiresCode: true,
+              expectedPoints: [
+                'Clear brute-force to optimal complexity progression',
+                'Clean, bug-free code handling boundary inputs',
+                'Accurate Big-O time and auxiliary space complexity analysis',
+              ],
+              sampleFollowUp: 'How would you handle edge cases like empty inputs, duplicates, or very large inputs?',
+            },
+          ]
+        : []),
+      {
+        id: 'code2',
+        question: 'Using the Coding IDE, write a function to find the length of the longest subarray with sum equal to K (handling negative numbers) in O(n) time, and explain your prefix-sum invariant.',
+        category: 'Coding',
+        difficulty: 'Intermediate',
+        requiresCode: true,
+        expectedPoints: [
+          'Prefix sum stored in HashMap mapping sum -> earliest/count index',
+          'Checking (currentSum - k) before updating map',
+          'Handles zero and negative elements cleanly unlike sliding window',
+        ],
+      },
+      {
+        id: 'code3',
+        question: 'In the Coding IDE, implement a sliding-window or two-pointer algorithm to find the longest substring without repeating characters, and trace how your left pointer moves.',
+        category: 'Coding',
+        difficulty: 'Intermediate',
+        requiresCode: true,
+        expectedPoints: [
+          'Maintaining last-seen character index map or frequency set',
+          'Advancing left pointer strictly forward: left = Math.max(left, lastSeen + 1)',
+          'O(n) time and O(min(n, charset)) space',
+        ],
+      },
+      {
+        id: 'code4',
+        question: 'Implement a cycle-free ordering or topological dependency resolver in the Coding IDE (e.g., Course Schedule prerequisites) and explain how you detect directed cycles.',
+        category: 'Coding',
+        difficulty: 'Intermediate',
+        requiresCode: true,
+        expectedPoints: [
+          'Adjacency list + in-degree array for Kahn BFS (or 3-color DFS)',
+          'Detecting cycle when visited count < total nodes',
+          'O(V + E) time and space complexity',
+        ],
+      },
+      {
+        id: 'code5',
+        question: 'Write code in the Coding IDE to merge overlapping intervals in O(n log n) time, and walk through what edge cases occur when intervals touch at endpoints.',
+        category: 'Coding',
+        difficulty: 'Beginner',
+        requiresCode: true,
+        expectedPoints: [
+          'Sorting intervals by start time ascending',
+          'Merging when next.start <= current.end using Math.max(end)',
+          'Handling single-interval and nested intervals',
+        ],
+      },
+      {
+        id: 'code6',
+        question: 'Implement Top K Frequent Elements in the Coding IDE in better than O(n log n) time using bucket sort or a bounded min-heap, and justify your data structure choice.',
+        category: 'Coding',
+        difficulty: 'Intermediate',
+        requiresCode: true,
+        expectedPoints: [
+          'Frequency map built in O(n)',
+          'Bucket array indexed by frequency for O(n) OR min-heap of size K for O(n log k)',
+          'Space complexity trade-offs when K approaches N',
+        ],
+      },
+    ];
+
+    const JAVA_QUESTIONS: MockInterviewQuestion[] = [
+      {
+        id: 'java1',
+        question: 'Explain the JVM Memory Model (Heap generations, Stack frames, Metaspace) and compare G1GC versus ZGC for low-latency Java microservices.',
+        category: 'Java',
+        difficulty: 'Intermediate',
+        requiresCode: false,
+        expectedPoints: [
+          'Eden/Survivor Young Gen vs Tenured Old Gen and per-thread Stack frames',
+          'Metaspace storing class metadata in native memory',
+          'G1 region-based pause targets vs ZGC concurrent colored-pointer compaction',
+        ],
+      },
+      {
+        id: 'java2',
+        question: 'How does ConcurrentHashMap achieve high read/write concurrency in Java 8+ compared to synchronized HashMap or Hashtable?',
+        category: 'Java',
+        difficulty: 'Intermediate',
+        requiresCode: false,
+        expectedPoints: [
+          'CAS operations for empty bin insertion and per-bucket synchronized locking on collisions',
+          'Volatile reads for lock-free get() operations',
+          'Treeification of long linked buckets (threshold 8) into balanced Red-Black trees',
+        ],
+      },
+      {
+        id: 'java3',
+        question: 'In Spring Boot, how does @Transactional work under the hood via dynamic proxies, and what common mistake causes self-invocation transactions to silently fail?',
+        category: 'Java',
+        difficulty: 'Intermediate',
+        requiresCode: false,
+        expectedPoints: [
+          'JDK Dynamic Proxy or CGLIB AOP proxy wrapping the bean boundary',
+          'Calling a @Transactional method from another method inside the same class bypasses the proxy',
+          'Checked exceptions do not trigger rollback unless rollbackFor is configured',
+        ],
+      },
+      {
+        id: 'java4',
+        question: 'Compare Java platform threads with Java 21 Virtual Threads (Project Loom). When do Virtual Threads yield massive throughput gains vs still pinning?',
+        category: 'Java',
+        difficulty: 'Intermediate',
+        requiresCode: false,
+        expectedPoints: [
+          'M:N scheduling mounting lightweight virtual threads onto carrier ForkJoinPool threads',
+          'Ideal for blocking I/O workloads (DB/HTTP calls) without thread-per-request OS RAM overhead',
+          'Carrier pinning considerations (native JNI calls or pre-Java-24 synchronized blocking)',
+        ],
+      },
+      {
+        id: 'java5',
+        question: 'Write a quick Java snippet in the Coding IDE using Streams or a HashMap to group a list of strings by anagram or find the first non-repeating character, and explain equals/hashCode contracts.',
+        category: 'Java',
+        difficulty: 'Beginner',
+        requiresCode: true,
+        expectedPoints: [
+          'Clean Java grouping / LinkedHashMap insertion-order lookup in O(n)',
+          'Equal objects must return identical hashCode; overriding only one breaks HashMap lookups',
+          'Time and space complexity analysis',
+        ],
+      },
+    ];
+
+    const PYTHON_QUESTIONS: MockInterviewQuestion[] = [
+      {
+        id: 'py1',
+        question: 'Explain Python’s Global Interpreter Lock (GIL). When do you choose asyncio, threading, or multiprocessing in production Python backends?',
+        category: 'Python',
+        difficulty: 'Intermediate',
+        requiresCode: false,
+        expectedPoints: [
+          'CPython GIL ensures only one thread executes Python bytecode at a time to protect reference counts',
+          'threading / asyncio excel at I/O-bound tasks since GIL is released during network/disk I/O',
+          'multiprocessing spawns separate processes with independent memory/GIL for CPU-bound work',
+        ],
+      },
+      {
+        id: 'py2',
+        question: 'How do Python generators and yield reduce memory usage compared to list comprehensions, and how does a decorator wrap function metadata using functools.wraps?',
+        category: 'Python',
+        difficulty: 'Beginner',
+        requiresCode: false,
+        expectedPoints: [
+          'Generators compute elements lazily on demand (O(1) memory) vs eager materialization in lists',
+          'Decorators take a callable and return an augmented wrapper closure',
+          'functools.wraps preserves __name__, __doc__, and function signature',
+        ],
+      },
+      {
+        id: 'py3',
+        question: 'Explain why mutable default arguments (like def add_item(item, items=[]):) cause subtle bugs in Python, and compare shallow copy vs deepcopy.',
+        category: 'Python',
+        difficulty: 'Beginner',
+        requiresCode: false,
+        expectedPoints: [
+          'Default argument objects are evaluated once at function definition time, not per call',
+          'Standard fix: use None sentinel and initialize inside function body',
+          'Shallow copy duplicates top-level container references; deepcopy recursively clones nested objects',
+        ],
+      },
+      {
+        id: 'py4',
+        question: 'In Django or FastAPI + SQLAlchemy, what is the N+1 query problem and how do select_related / prefetch_related (or eager joins) eliminate it?',
+        category: 'Python',
+        difficulty: 'Intermediate',
+        requiresCode: false,
+        expectedPoints: [
+          'Lazy-loading related foreign keys inside a loop fires 1 parent query + N child queries',
+          'select_related uses SQL JOIN for single-valued relations; prefetch_related runs separate IN-clause batch lookup',
+          'Monitoring with query loggers and Pydantic serialization awareness',
+        ],
+      },
+      {
+        id: 'py5',
+        question: 'In the Coding IDE, write a Python function or decorator (e.g., an LRU/memoization cache or rate-limit wrapper) and explain how Python garbage collection and reference counting clean up cycles.',
+        category: 'Python',
+        difficulty: 'Intermediate',
+        requiresCode: true,
+        expectedPoints: [
+          'Working Python function/decorator syntax',
+          'Primary reference counting deallocates immediately at 0 refs; generational cyclic GC resolves reference cycles',
+        ],
+      },
+    ];
+
+    const DATABASE_QUESTIONS: MockInterviewQuestion[] = [
+      {
+        id: 'db1',
+        question: 'How do you design a composite B+ Tree index for a query filtering on status, created_at range, and user_id? Explain the leftmost prefix rule.',
+        category: 'Database',
+        difficulty: 'Intermediate',
+        requiresCode: false,
+        expectedPoints: [
+          'Equality columns first, range/sort columns last (e.g., (user_id, status, created_at))',
+          'Leftmost prefix rule determines whether index seeks can satisfy partial column predicates',
+          'Covering indexes (INCLUDE / index-only scan) avoid heap table fetches',
+        ],
+      },
+      {
+        id: 'db2',
+        question: 'Compare SQL Isolation Levels (Read Committed, Repeatable Read, Serializable) and explain how MVCC prevents readers from blocking writers.',
+        category: 'Database',
+        difficulty: 'Intermediate',
+        requiresCode: false,
+        expectedPoints: [
+          'Anomalies prevented at each level: dirty reads, non-repeatable reads, phantom reads',
+          'MVCC maintains row versions/snapshots stamped with transaction IDs so reads see consistent snapshots without write locks',
+          'Write-skew anomaly trade-offs in snapshot isolation vs Serializable (SSI)',
+        ],
+      },
+      {
+        id: 'db3',
+        question: 'When reading an EXPLAIN ANALYZE plan on a slow SQL query, what red flags do you look for (Seq Scan, nested loop explosion, sort spill) and how do you fix them?',
+        category: 'Database',
+        difficulty: 'Intermediate',
+        requiresCode: false,
+        expectedPoints: [
+          'Actual vs estimated row count mismatches (stale statistics -> ANALYZE)',
+          'Sequential scans on large tables missing selective indexes or non-sargable expressions (e.g. functions wrapping indexed columns)',
+          'Hash join vs nested loop join cost trade-offs',
+        ],
+      },
+      {
+        id: 'db4',
+        question: 'How do you decide between embedding documents versus referencing ObjectIds in MongoDB, and when does horizontal sharding introduce cross-shard scatter-gather overhead?',
+        category: 'Database',
+        difficulty: 'Intermediate',
+        requiresCode: false,
+        expectedPoints: [
+          'Embed bounded 1:few data read/updated together (16MB doc limit); reference unbounded 1:many relationships',
+          'Shard key cardinality & monotonicity determine write distribution vs hot-spotting',
+          'Queries missing the shard key trigger scatter-gather across all shards',
+        ],
+      },
+      {
+        id: 'db5',
+        question: 'Write an SQL query (or pseudocode/query in the IDE) using CTEs and a Window Function (ROW_NUMBER / DENSE_RANK) to find the top 2 highest-paid employees per department without collapsing duplicate ties.',
+        category: 'Database',
+        difficulty: 'Intermediate',
+        requiresCode: true,
+        expectedPoints: [
+          'DENSE_RANK() OVER (PARTITION BY department_id ORDER BY salary DESC)',
+          'Filtering ranked rows in outer query / CTE where rnk <= 2',
+          'Difference between ROW_NUMBER, RANK, and DENSE_RANK',
+        ],
+      },
+    ];
+
+    const AIML_QUESTIONS: MockInterviewQuestion[] = [
+      {
+        id: 'aiml1',
+        question: 'Walk through how a Retrieval-Augmented Generation (RAG) pipeline works end-to-end. How do you prevent chunking boundary loss and LLM hallucinations?',
+        category: 'AI/ML',
+        difficulty: 'Intermediate',
+        requiresCode: false,
+        expectedPoints: [
+          'Document chunking with overlap, embedding generation, vector + BM25 hybrid retrieval, cross-encoder reranking',
+          'Grounding prompts to retrieved context, inline citations, abstention instructions when confidence is low',
+          'Evaluating Faithfulness, Context Precision, and Answer Relevance',
+        ],
+      },
+      {
+        id: 'aiml2',
+        question: 'Explain Scaled Dot-Product Self-Attention (Q, K, V) in Transformers. Why do we divide by sqrt(d_k), and how does KV caching speed up autoregressive token generation?',
+        category: 'AI/ML',
+        difficulty: 'Intermediate',
+        requiresCode: false,
+        expectedPoints: [
+          'Scaling by sqrt(d_k) prevents large dot products from pushing softmax into vanishing-gradient regions',
+          'KV cache stores past Key/Value tensors across decoding steps reducing per-token attention work from O(n^2) recompute to O(n)',
+          'Memory bandwidth bottleneck trade-offs (PagedAttention / GQA)',
+        ],
+      },
+      {
+        id: 'aiml3',
+        question: 'When building a classifier on a heavily imbalanced dataset (e.g. 99% negative, 1% fraud), why is Accuracy misleading and which metrics/training adjustments should you use?',
+        category: 'AI/ML',
+        difficulty: 'Beginner',
+        requiresCode: false,
+        expectedPoints: [
+          'Dummy majority classifier gets 99% accuracy with 0% recall on positive class',
+          'Precision, Recall, F1, and PR-AUC focus on minority class performance',
+          'Class weights, focal loss, threshold tuning, stratified splits, and avoiding leakage when oversampling',
+        ],
+      },
+      {
+        id: 'aiml4',
+        question: 'Compare Prompt Engineering, RAG, and Parameter-Efficient Fine-Tuning (LoRA / QLoRA). How do you decide which one solves a production use case best?',
+        category: 'AI/ML',
+        difficulty: 'Intermediate',
+        requiresCode: false,
+        expectedPoints: [
+          'Prompting for rapid iteration; RAG for dynamic/fresh factual knowledge & traceability',
+          'LoRA/QLoRA freezes base weights and trains low-rank adapters for style, strict formatting, or specialized domain reasoning',
+          '4-bit NF4 quantization trade-offs between VRAM savings and tiny perplexity shifts',
+        ],
+      },
+      {
+        id: 'aiml5',
+        question: 'Explain the Bias-Variance trade-off in machine learning, and compare L1 (Lasso) vs L2 (Ridge) regularization plus Dropout for preventing overfitting.',
+        category: 'AI/ML',
+        difficulty: 'Beginner',
+        requiresCode: false,
+        expectedPoints: [
+          'High bias = underfitting; high variance = overfitting training noise',
+          'L1 encourages sparse feature weights (feature selection); L2 shrinks weights smoothly',
+          'Dropout disables activations randomly during training as implicit ensemble regularization',
+        ],
+      },
+    ];
+
     // Helper: non-destructive Fisher-Yates array shuffle
     const shuffle = <T>(arr: T[]): T[] => {
       const copy = [...arr];
@@ -4022,68 +4982,162 @@ Return ONLY a valid JSON object matching this schema:
       return copy;
     };
 
-    // Determine role-specific technical question pool
-    const lowerRole = role.toLowerCase();
-    let roleTechPool: MockInterviewQuestion[] = [];
-
-    if (lowerRole.includes('full stack')) {
-      roleTechPool = FULL_STACK_QUESTIONS;
-    } else if (lowerRole.includes('dsa') || lowerRole.includes('algorithm')) {
-      roleTechPool = DSA_QUESTIONS;
-    } else if (lowerRole.includes('backend')) {
-      roleTechPool = BACKEND_QUESTIONS;
-    } else if (lowerRole.includes('frontend')) {
-      roleTechPool = FRONTEND_QUESTIONS;
-    } else {
-      roleTechPool = SDE1_CORE_QUESTIONS;
+    const insights = this.extractResumeHighlights(resumeText, customTopics);
+    const resumeQuestions: MockInterviewQuestion[] = [];
+    if (insights.projects.length > 0 && type !== 'HR' && type !== 'Behavioral' && type !== 'Coding') {
+      const proj = insights.projects[0];
+      const stackTxt = insights.skills.slice(0, 3).join(', ');
+      resumeQuestions.push({
+        id: 'resume-proj-1',
+        question: `On your resume you listed "${proj}"${stackTxt ? ` using ${stackTxt}` : ''}. Walk me through its architecture, the trickiest technical bottleneck or edge case you solved, and what you would redesign at 10x traffic.`,
+        category: type || 'Technical',
+        difficulty,
+        requiresCode: false,
+        expectedPoints: [
+          `Concrete ownership and architecture breakdown of ${proj}`,
+          'Real failure mode, bottleneck, or data-consistency trade-off handled',
+          'Scalability improvements justified with engineering metrics',
+        ],
+        sampleFollowUp: `What part of ${proj} caused the hardest bug or latency spike during testing?`,
+      });
+    } else if (insights.skills.length > 0 && type === 'Custom') {
+      resumeQuestions.push({
+        id: 'custom-stack-1',
+        question: `Since you focused this session on ${insights.skills.slice(0, 4).join(', ')}, pick the technology you used most deeply and explain an architectural trade-off or production pitfall you encountered with it.`,
+        category: 'Custom',
+        difficulty,
+        requiresCode: false,
+        expectedPoints: [
+          'Hands-on depth in chosen stack rather than textbook definitions',
+          'Concrete failure/edge case and mitigation strategy',
+          'Comparison against alternative tools',
+        ],
+      });
     }
 
-    let finalPool: MockInterviewQuestion[] = [];
+    // Route strictly by interviewType FIRST, then roundType/role so every type produces distinct questions!
+    const lowerType = (type || 'Technical').toLowerCase();
+    const lowerRound = (roundType || '').toLowerCase();
+    const lowerRole = (role || '').toLowerCase();
 
-    if (type === 'Technical') {
-      finalPool = shuffle(roleTechPool);
-    } else if (type === 'HR') {
-      finalPool = shuffle(HR_QUESTIONS);
-    } else if (type === 'Behavioral') {
-      finalPool = shuffle(BEHAVIORAL_QUESTIONS);
+    const isCoding = lowerType === 'coding' || lowerType.includes('coding');
+    const isHR = lowerType === 'hr' || (!isCoding && lowerRound === 'hiring_manager');
+    const isBehavioral = lowerType === 'behavioral' || (!isCoding && !isHR && lowerRound === 'behavioral');
+
+    let primaryPool: MockInterviewQuestion[] = [];
+    if (isCoding) {
+      primaryPool = [...CODING_QUESTIONS, ...shuffle(DSA_QUESTIONS).slice(0, 3).map((q) => ({ ...q, category: 'Coding', requiresCode: true }))];
+    } else if (isHR) {
+      primaryPool = shuffle([...HR_QUESTIONS]);
+    } else if (isBehavioral) {
+      primaryPool = shuffle([...BEHAVIORAL_QUESTIONS]);
+    } else if (lowerType.includes('java')) {
+      primaryPool = shuffle([...JAVA_QUESTIONS, ...BACKEND_QUESTIONS.slice(0, 2)]);
+    } else if (lowerType.includes('python')) {
+      primaryPool = shuffle([...PYTHON_QUESTIONS, ...BACKEND_QUESTIONS.slice(0, 2)]);
+    } else if (lowerType.includes('database') || lowerType.includes('sql')) {
+      primaryPool = shuffle([...DATABASE_QUESTIONS]);
+    } else if (lowerType.includes('ai') || lowerType.includes('ml')) {
+      primaryPool = shuffle([...AIML_QUESTIONS]);
+    } else if (lowerType.includes('frontend') || lowerRole.includes('frontend')) {
+      primaryPool = shuffle([...FRONTEND_QUESTIONS]);
+    } else if (lowerType.includes('backend') || lowerRole.includes('backend')) {
+      primaryPool = shuffle([...BACKEND_QUESTIONS]);
+    } else if (lowerType.includes('full stack') || lowerRole.includes('full stack')) {
+      primaryPool = shuffle([...FULL_STACK_QUESTIONS]);
+    } else if (lowerType === 'custom') {
+      // Custom mix guided by detected skills/topics
+      const customPool: MockInterviewQuestion[] = [];
+      if (insights.skills.some((s) => /java\b|spring/i.test(s))) customPool.push(...JAVA_QUESTIONS);
+      if (insights.skills.some((s) => /python|django|fastapi/i.test(s))) customPool.push(...PYTHON_QUESTIONS);
+      if (insights.skills.some((s) => /react|next|typescript|frontend|css/i.test(s))) customPool.push(...FRONTEND_QUESTIONS);
+      if (insights.skills.some((s) => /sql|mongo|postgres|database|redis/i.test(s))) customPool.push(...DATABASE_QUESTIONS);
+      if (insights.skills.some((s) => /ai|ml|rag|llm|pytorch|tensorflow/i.test(s))) customPool.push(...AIML_QUESTIONS);
+      if (insights.skills.some((s) => /node|express|kafka|backend|docker/i.test(s))) customPool.push(...BACKEND_QUESTIONS);
+      primaryPool = shuffle(customPool.length >= 4 ? customPool : [...FULL_STACK_QUESTIONS, ...SDE1_CORE_QUESTIONS]);
+    } else if (lowerType === 'technical') {
+      primaryPool = shuffle([...SDE1_CORE_QUESTIONS, ...BACKEND_QUESTIONS.slice(0, 3)]);
     } else {
-      // Mixed Track: dynamically interleave role-specific technical + behavioral + HR questions
-      const shuffledTech = shuffle(roleTechPool);
-      const shuffledBehav = shuffle(BEHAVIORAL_QUESTIONS);
-      const shuffledHR = shuffle(HR_QUESTIONS);
-
-      finalPool = [];
-      let tIdx = 0, bIdx = 0, hIdx = 0;
-      for (let i = 0; i < count; i++) {
-        if (i % 3 === 0) {
-          finalPool.push(shuffledTech[tIdx++ % shuffledTech.length]);
-        } else if (i % 3 === 1) {
-          finalPool.push(shuffledBehav[bIdx++ % shuffledBehav.length]);
-        } else {
-          finalPool.push(shuffledHR[hIdx++ % shuffledHR.length]);
-        }
+      // Mixed / fallback interleaving
+      const tech = shuffle([...SDE1_CORE_QUESTIONS, ...FULL_STACK_QUESTIONS.slice(0, 3)]);
+      const behav = shuffle(BEHAVIORAL_QUESTIONS);
+      const hr = shuffle(HR_QUESTIONS);
+      for (let i = 0; i < count + 2; i++) {
+        if (i % 3 === 0) primaryPool.push(tech[i % tech.length]);
+        else if (i % 3 === 1) primaryPool.push(behav[i % behav.length]);
+        else primaryPool.push(hr[i % hr.length]);
       }
     }
 
-    const introQ: MockInterviewQuestion = {
-      id: 'q-intro-1',
-      question:
-        "Tell me about yourself, your background in Computer Science, and a brief overview of the key projects you've developed such as your salary or electricity usage tracker.",
-      category: 'Behavioral',
-      difficulty: 'Beginner',
-      expectedPoints: [
-        'Candidate background, education in Computer Science & engineering journey',
-        'Overview of core projects developed (e.g., Salary tracker, Electricity usage tracker)',
-        'Clear, articulate communication and structured self-introduction',
-      ],
-      sampleFollowUp: 'What motivated you to build the electricity usage tracker, and what was your primary architectural role?',
-    };
+    // Track-specific natural opening question (varies by track, company & resume instead of one frozen sentence)
+    let introQ: MockInterviewQuestion;
+    if (isCoding) {
+      introQ = {
+        id: 'q-intro-coding',
+        question: `Welcome to your ${company !== 'General Tech' ? `${company} ` : ''}Coding round. Before we jump into the live Coding IDE${codingProblemTitle ? ` with "${codingProblemTitle}"` : ''}, briefly tell me your primary coding language, which data structures you're strongest in, and how you verify time and space complexity.`,
+        category: 'Coding',
+        difficulty: 'Beginner',
+        requiresCode: false,
+        expectedPoints: [
+          'Clear choice of primary language & standard library fluency',
+          'Structured problem-solving approach (constraints -> brute force -> optimize -> edge cases)',
+        ],
+        sampleFollowUp: 'Let’s dive right into the Coding IDE for your first problem.',
+      };
+    } else if (isHR) {
+      introQ = {
+        id: 'q-intro-hr',
+        question: `Thanks for joining today. Walk me through your academic and engineering journey so far, what motivates you to target ${role} roles at ${company}, and one achievement you’re genuinely proud of.`,
+        category: 'HR',
+        difficulty: 'Beginner',
+        requiresCode: false,
+        expectedPoints: [
+          'Clear, concise career narrative without reading a script',
+          'Genuine alignment with role & engineering culture',
+          'Specific personal contribution or achievement',
+        ],
+      };
+    } else if (isBehavioral) {
+      introQ = {
+        id: 'q-intro-behavioral',
+        question: `Welcome! To kick off this Behavioral round, tell me briefly about a meaningful team project${insights.projects[0] ? ` (such as ${insights.projects[0]})` : ''} and walk me through a tough obstacle you personally helped resolve using the STAR structure.`,
+        category: 'Behavioral',
+        difficulty: 'Beginner',
+        requiresCode: false,
+        expectedPoints: [
+          'Clear Situation and Task context',
+          'Personal ownership in Action rather than vague team phrasing',
+          'Concrete measurable Result and learning',
+        ],
+      };
+    } else {
+      introQ = {
+        id: 'q-intro-tech',
+        question: insights.projects[0]
+          ? `Welcome to your ${type} interview. I noticed "${insights.projects[0]}" on your resume${insights.skills.length ? ` alongside ${insights.skills.slice(0, 3).join(', ')}` : ''}. Give me a quick 60-second background and walk me through the architecture of that project.`
+          : `Welcome to your ${type} interview for ${role}. Give me a concise overview of your background and walk me through the architecture and technical decisions behind your strongest project.`,
+        category: type || 'Technical',
+        difficulty: 'Beginner',
+        requiresCode: false,
+        expectedPoints: [
+          'Concise background tailored to target role',
+          'Clear system/module architecture and stack justification',
+          'Ownership of engineering trade-offs',
+        ],
+      };
+    }
 
-    const remaining = finalPool.filter((q) => !q.question.toLowerCase().includes('yourself'));
-    const finalSelection = [introQ, ...remaining].slice(0, count);
+    const dedupedRest = [...resumeQuestions, ...primaryPool].filter(
+      (q, idx, arr) =>
+        !q.question.toLowerCase().includes('tell me about yourself, your technical background') &&
+        arr.findIndex((other) => other.question === q.question) === idx
+    );
+
+    const finalSelection = [introQ, ...dedupedRest].slice(0, count);
 
     return finalSelection.map((q, idx) => ({
       ...q,
+      requiresCode: isHR || isBehavioral ? false : Boolean(q.requiresCode),
       id: `${q.id || 'q'}-${Date.now().toString(36)}-${idx}`,
     }));
   }
@@ -4136,28 +5190,28 @@ Return ONLY a valid JSON object matching this schema:
         title: 'Candidate Profile, Background & Project Introduction',
         requiredConcepts: [
           {
-            terms: ['name', 'mothers', 'ahmed', 'hassan', 'student', 'myself'],
-            label: 'Candidate identity & self-introduction (Mohammed Hassan Ahmed)',
+            terms: ['name', 'myself', 'i am', 'im', 'student', 'engineer', 'graduate'],
+            label: 'Candidate identity & structured self-introduction',
           },
           {
             terms: ['computer', 'science', 'engineering', 'diploma', 'degree', 'college', 'journey', 'education', 'cse'],
             label: 'Educational background in Computer Science & Engineering',
           },
           {
-            terms: ['salary', 'electricity', 'tracker', 'project', 'developed', 'app', 'application', 'built'],
-            label: 'Key software projects highlighted (Salary Tracker / Electricity Usage Tracker)',
+            terms: ['project', 'developed', 'app', 'application', 'built', 'system', 'platform', 'tracker'],
+            label: 'Key software project experience & system ownership highlighted',
           },
           {
-            terms: ['software', 'developer', 'frontend', 'backend', 'full stack', 'coding', 'technology', 'node', 'react'],
-            label: 'Technical focus in Full Stack Development (Node.js, React, databases)',
+            terms: ['software', 'developer', 'frontend', 'backend', 'full stack', 'coding', 'technology', 'node', 'react', 'python', 'java'],
+            label: 'Technical focus & core engineering stack',
           },
         ],
         sde1Answer:
-          'I am Mohammed Hassan Ahmed, a Computer Science and Engineering graduate who began my software engineering journey through a diploma in engineering and progressed into full-stack development. During my degree, I developed production-oriented applications including an Electricity Usage Tracker and a Salary Calculator, using React, Node.js, and MongoDB. I focus on writing clean, modular code, building responsive interfaces, and implementing RESTful APIs with solid error handling.',
+          'I am a Computer Science and Engineering graduate focusing on full-stack development with React, Node.js, and modern databases. Across my academic and personal projects, I built RESTful APIs with clean input validation, modular UI components, and persistent data storage while applying core data structures and error handling to ensure reliable user workflows.',
         sde2Answer:
-          'I am Mohammed Hassan Ahmed, a Computer Science and Engineering graduate specializing in scalable full-stack development with React, Node.js, and distributed databases. In my Salary and Electricity Usage Tracker, I designed event-driven telemetry ingestion pipelines, applied optimistic locking in MongoDB to eliminate race conditions during concurrent meter updates, and integrated asynchronous AI forecasting with Redis caching to maintain sub-50ms API response latencies.',
+          'I am a software engineer specializing in scalable full-stack systems using React, TypeScript, Node.js, and relational/document databases. In my primary backend project, I designed event-driven ingestion pipelines, applied optimistic concurrency control to eliminate write race conditions, and layered Redis caching to keep p95 API latencies under 50ms.',
         seniorAnswer:
-          'I am Mohammed Hassan Ahmed, a Computer Science and Engineering graduate with deep experience architecting full-stack systems with Node.js, React, and polyglot persistence. Across projects like the Electricity Usage and Salary Tracker, I focused on high-availability telemetry pipelines, WAL-backed state persistence, optimistic concurrency control under peak loads, and asynchronous AI inference pipelines using message buffers to isolate critical read paths from batch compute workloads.',
+          'I am a software architect with deep experience designing high-availability full-stack platforms using polyglot persistence and asynchronous pipelines. Across production systems, I have focused on fault isolation via message buffers, write consistency via WAL-backed stores and optimistic locking, and observability-driven latency optimization across distributed services.',
         recommendedTopics: [
           'Elevator Pitch Structuring for Campus Recruitment',
           'Highlighting Engineering Impact & Quantitative Metrics',
@@ -4426,9 +5480,9 @@ Return ONLY a valid JSON object matching this schema:
           { terms: ['result', 'outcome', 'fixed', 'improved', 'resolved', 'prevented', 'metric', 'learned'], label: 'Result: Measurable outcome, verified impact, and future prevention' },
         ],
         sde1Answer:
-          'Situation: While developing my Salary Calculator project in JavaScript, users reported that overtime computations were inaccurate for certain months. Task: My responsibility was to debug the root cause and ensure calculations were exact. Action: I used browser developer tools and unit tests to trace the calculation flow, discovering a floating-point precision issue combined with 0-indexed month handling in JavaScript Date. I refactored the math using integer representations and added input validation. Result: The bug was completely fixed, verified by automated test cases across all 12 calendar months with zero calculation errors.',
+          'Situation: While building a payroll calculation module in JavaScript, users reported that monthly overtime computations produced slight rounding inaccuracies across certain calendar months. Task: My responsibility was to debug the root cause and guarantee exact calculations. Action: I used unit tests and devtools to trace the calculation flow, isolating a floating-point precision issue combined with 0-indexed month arithmetic. I refactored monetary calculations to integer cents and added strict validation. Result: The bug was completely resolved and verified across all 12 calendar month fixtures with zero discrepancies.',
         sde2Answer:
-          'Situation: In my Salary Calculator web application, intermittent calculation discrepancies were detected in monthly overtime pay during multi-month projections. Task: As the primary developer, I needed to isolate the issue without disrupting active sessions. Action: I reproduced the failure through automated regression tests, identifying a floating-point rounding artifact and timezone drift in month arithmetic. I migrated monetary calculations to integer cents and implemented strict validation boundaries. Result: The bug was eradicated with 100% test coverage across calendar boundaries, and I documented the floating-point arithmetic guidelines for future feature additions.',
+          'Situation: In a web calculation service I maintained, intermittent rounding discrepancies appeared during multi-month billing projections. Task: As the primary developer, I needed to isolate and fix the computation bug without disrupting live sessions. Action: I reproduced the failure via automated regression tests, traced it to IEEE 754 floating-point rounding and timezone drift, migrated arithmetic to integer cents, and added strict schema validation. Result: We achieved 100% pass rates across calendar boundary fixtures and documented precision-safe calculation standards for the codebase.',
         seniorAnswer:
           'Situation: In our application, an edge-case rounding discrepancy in payroll overtime calculations led to data inaccuracies across cross-month billing periods. Task: I was responsible for diagnosing the root cause, remediating the calculation engine, and implementing preventative guards across our CI/CD pipeline. Action: I performed root-cause analysis, traced the issue to IEEE 754 floating-point inaccuracies and timezone offsets, refactored calculations to integer cents, and instituted automated property-based testing. Result: We eliminated calculation discrepancies, achieved 100% test fixture coverage, and established engineering standards that prevented similar precision bugs.',
         recommendedTopics: [

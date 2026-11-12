@@ -103,13 +103,12 @@ export const ProblemWorkspacePage: React.FC = () => {
         const prob = await fetchProblemById(idOrSlug);
         setProblem(prob);
 
-        // Populate initial code with verified optimal solution so compiler runs successfully out of the box
-        const solData = prob.solution || PROBLEM_SOLUTIONS[prob.slug];
+        // Initialize editor with starter templates so candidates solve before viewing reference solutions
         setCodePerLanguage({
-          javascript: solData?.solutions?.javascript || prob.starterCode.javascript || '',
-          python: solData?.solutions?.python || prob.starterCode.python || '',
-          java: solData?.solutions?.java || prob.starterCode.java || '',
-          cpp: solData?.solutions?.cpp || prob.starterCode.cpp || '',
+          javascript: prob.starterCode?.javascript || '',
+          python: prob.starterCode?.python || '',
+          java: prob.starterCode?.java || '',
+          cpp: prob.starterCode?.cpp || '',
         });
 
         if (prob.testCases && prob.testCases.length > 0) {
@@ -211,7 +210,7 @@ export const ProblemWorkspacePage: React.FC = () => {
         testCasesPassed: 0,
         totalTestCases: 0,
         testResults: [],
-        error: err.response?.data?.error || err.message || 'Execution error',
+        error: err?.data?.error || err?.response?.data?.error || err?.message || 'Execution error',
       });
     } finally {
       setIsRunning(false);
@@ -253,7 +252,7 @@ export const ProblemWorkspacePage: React.FC = () => {
         testCasesPassed: 0,
         totalTestCases: 0,
         testResults: [],
-        error: err.response?.data?.error || err.message || 'Submission error',
+        error: err?.data?.error || err?.response?.data?.error || err?.message || 'Submission error',
       });
     } finally {
       setIsSubmitting(false);

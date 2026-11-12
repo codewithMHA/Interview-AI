@@ -20,17 +20,20 @@ export class ConversationService {
   public static async getOrCreateConversation(
     userId: string = 'guest',
     conversationId?: string,
-    topic: string = 'General'
-  ): Promise<{ id: string; title: string; summary?: string; topic: string }> {
+    topic: string = 'General',
+    title: string = 'New Conversation'
+  ): Promise<{ id: string; title: string; summary?: string; topic: string; isNew?: boolean }> {
+    const resolvedTitle = (title && title.trim()) || 'New Conversation';
     if (this.isDbConnected()) {
       if (conversationId && mongoose.isValidObjectId(conversationId)) {
-        const existing = await Conversation.findById(conversationId);
-        if (existing) {
+        const existing = await Conversation.findById(conversationId).lean();
+        if (existing && String(existing.userId) === String(userId)) {
           return {
             id: existing._id.toString(),
             title: existing.title,
             summary: existing.summary,
             topic: existing.topic || topic,
+            isNew: false,
           };
         }
       }
@@ -38,7 +41,7 @@ export class ConversationService {
       // Create new conversation in MongoDB
       const created = await Conversation.create({
         userId,
-        title: 'New Conversation',
+        title: resolvedTitle,
         topic,
         summary: '',
       });
@@ -47,26 +50,29 @@ export class ConversationService {
         title: created.title,
         summary: created.summary,
         topic: created.topic || topic,
+        isNew: true,
       };
     } else {
       // In-memory devStore
       if (conversationId) {
         const existing = devStore.getConversation(conversationId);
-        if (existing) {
+        if (existing && String(existing.userId) === String(userId)) {
           return {
             id: existing._id,
             title: existing.title,
             summary: existing.summary,
             topic: existing.topic || topic,
+            isNew: false,
           };
         }
       }
-      const created = devStore.createConversation(userId, 'New Conversation', topic);
+      const created = devStore.createConversation(userId, resolvedTitle, topic);
       return {
         id: created._id,
         title: created.title,
         summary: created.summary,
         topic: created.topic || topic,
+        isNew: true,
       };
     }
   }
@@ -80,26 +86,47 @@ export class ConversationService {
     content: string,
     data?: any
   ): Promise<{ id: string; createdAt: Date }> {
-    if (this.isDbConnected()) {
-      const msg = await Message.create({
-        conversationId,
-        role,
-        content,
-        data: data || null,
-      });
+    if (this.isDbConnected() && mongoose.isValidObjectId(conversationId)) {
+      const convUpdatePromise =
+        role === 'user'
+          ? Conversation.bulkWrite([
+              {
+                updateOne: {
+                  filter: {
+                    _id: conversationId,
+                    title: { $in: ['New Conversation', 'New Chat'] },
+                  },
+                  update: {
+                    $set: {
+                      title: content.substring(0, 40) + (content.length > 40 ? '...' : ''),
+                    },
+                  },
+                },
+              },
+              {
+                updateOne: {
+                  filter: { _id: conversationId },
+                  update: {
+                    $inc: { messageCount: 1 },
+                    $set: { updatedAt: new Date() },
+                  },
+                },
+              },
+            ])
+          : Conversation.findByIdAndUpdate(conversationId, {
+              $inc: { messageCount: 1 },
+              $set: { updatedAt: new Date() },
+            });
 
-      // Update conversation metadata
-      const updates: any = {
-        $inc: { messageCount: 1 },
-        updatedAt: new Date(),
-      };
-      if (role === 'user') {
-        const conv = await Conversation.findById(conversationId);
-        if (conv && (conv.title === 'New Conversation' || conv.title === 'New Chat')) {
-          updates.title = content.substring(0, 40) + (content.length > 40 ? '...' : '');
-        }
-      }
-      await Conversation.findByIdAndUpdate(conversationId, updates);
+      const [msg] = await Promise.all([
+        Message.create({
+          conversationId,
+          role,
+          content,
+          data: data || null,
+        }),
+        convUpdatePromise,
+      ]);
 
       return {
         id: msg._id.toString(),
@@ -126,11 +153,17 @@ export class ConversationService {
     topic?: string;
   }> {
     if (this.isDbConnected()) {
-      const conv = await Conversation.findById(conversationId);
-      const messages = await Message.find({ conversationId })
-        .sort({ createdAt: -1 })
-        .limit(limit)
-        .lean();
+      if (!mongoose.isValidObjectId(conversationId)) {
+        return { history: [] };
+      }
+
+      const [conv, messages] = await Promise.all([
+        Conversation.findById(conversationId).lean(),
+        Message.find({ conversationId })
+          .sort({ createdAt: -1 })
+          .limit(limit)
+          .lean(),
+      ]);
 
       // Return chronological order
       const chronological = messages.reverse().map((m) => ({
@@ -164,14 +197,12 @@ export class ConversationService {
    */
   public static async listConversations(userId: string = 'guest'): Promise<any[]> {
     if (this.isDbConnected()) {
-      return await Conversation.find({
-        $or: [{ userId }, { userId: 'guest' }],
-      })
+      return await Conversation.find({ userId: String(userId) })
         .sort({ updatedAt: -1 })
         .limit(30)
         .lean();
     } else {
-      return devStore.getConversations(userId);
+      return devStore.getConversations(String(userId));
     }
   }
 
@@ -182,11 +213,14 @@ export class ConversationService {
     conversationId: string
   ): Promise<{ conversation: any; messages: any[] } | null> {
     if (this.isDbConnected()) {
-      const conversation = await Conversation.findById(conversationId).lean();
+      if (!mongoose.isValidObjectId(conversationId)) {
+        return null;
+      }
+      const [conversation, messages] = await Promise.all([
+        Conversation.findById(conversationId).lean(),
+        Message.find({ conversationId }).sort({ createdAt: 1 }).lean(),
+      ]);
       if (!conversation) return null;
-      const messages = await Message.find({ conversationId })
-        .sort({ createdAt: 1 })
-        .lean();
       return { conversation, messages };
     } else {
       const conversation = devStore.getConversation(conversationId);
@@ -201,8 +235,13 @@ export class ConversationService {
    */
   public static async deleteConversation(conversationId: string): Promise<boolean> {
     if (this.isDbConnected()) {
-      await Message.deleteMany({ conversationId });
-      const res = await Conversation.findByIdAndDelete(conversationId);
+      if (!mongoose.isValidObjectId(conversationId)) {
+        return false;
+      }
+      const [, res] = await Promise.all([
+        Message.deleteMany({ conversationId }),
+        Conversation.findByIdAndDelete(conversationId),
+      ]);
       return !!res;
     } else {
       return devStore.deleteConversation(conversationId);

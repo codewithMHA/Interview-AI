@@ -88,7 +88,7 @@ export const RegisterPage: React.FC = () => {
               <Input
                 label="Full Name"
                 name="name"
-                placeholder="e.g. Mohammed Hassan Ahmed"
+                placeholder="e.g. Aarav Sharma"
                 value={formData.name}
                 onChange={handleChange}
                 leftIcon={<User className="w-4 h-4" />}

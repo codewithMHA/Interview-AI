@@ -154,22 +154,28 @@ export const login = async (
     }
 
     const normalizedEmail = email.toLowerCase().trim();
+    const allowDemoBypass = process.env.NODE_ENV !== 'production' || process.env.ALLOW_DEMO_LOGIN === 'true';
+    const isDemoEmail = normalizedEmail === 'student@placement.edu' || normalizedEmail === 'student@demo.com';
     const isMongo = getDBStatus().isConnected;
 
     if (isMongo) {
       let user: any = await User.findOne({ email: normalizedEmail }).select('+password');
 
-      // If demo student doesn't exist yet, auto-provision
-      if (!user && (normalizedEmail === 'student@placement.edu' || normalizedEmail === 'student@demo.com')) {
+      // If demo student doesn't exist yet in non-production, auto-provision
+      if (!user && allowDemoBypass && isDemoEmail) {
         await autoSeedDatabase();
         user = await User.findOne({ email: { $in: ['student@placement.edu', 'student@demo.com'] } }).select('+password');
       }
 
       if (!user) {
-        // Fallback: check devStore for demo user
-        const devUser = (await devStore.findUserByEmail(normalizedEmail)) || (await devStore.findUserByEmail('student@placement.edu'));
+        // Fallback: check devStore only for matching email (never fall back to demo user for arbitrary emails)
+        const devUser =
+          (await devStore.findUserByEmail(normalizedEmail)) ||
+          (allowDemoBypass && isDemoEmail ? await devStore.findUserByEmail('student@placement.edu') : null);
         if (devUser) {
-          const isMatch = (password === 'Placement2026!' || password === 'password123') || (await bcrypt.compare(password, devUser.password));
+          const isMatch =
+            (allowDemoBypass && isDemoEmail && (password === 'Placement2026!' || password === 'password123')) ||
+            (await bcrypt.compare(password, devUser.password));
           if (isMatch) {
             const devProfile = await devStore.getProfile(devUser.id);
             const token = generateToken({
@@ -203,8 +209,8 @@ export const login = async (
       }
 
       let isMatch = await user.comparePassword(password);
-      // Auto-heal demo student password
-      if (!isMatch && (normalizedEmail === 'student@placement.edu' || normalizedEmail === 'student@demo.com') && (password === 'Placement2026!' || password === 'password123')) {
+      // Auto-heal demo student password only in non-production environments
+      if (!isMatch && allowDemoBypass && isDemoEmail && (password === 'Placement2026!' || password === 'password123')) {
         isMatch = true;
       }
 

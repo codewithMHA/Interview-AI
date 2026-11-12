@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
-import { Sparkles, Mail, Lock, ArrowRight, CheckCircle2, Zap, Shield } from 'lucide-react';
+import { Sparkles, Mail, Lock, ArrowRight, Shield } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
 import { Button } from '@/components/common/Button';
 import { Input } from '@/components/common/Input';
@@ -14,7 +14,6 @@ export const LoginPage: React.FC = () => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [isDemoLoading, setIsDemoLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
 
   const destination = (location.state as any)?.from?.pathname || '/dashboard';
@@ -37,25 +36,6 @@ export const LoginPage: React.FC = () => {
     } finally {
       setIsLoading(false);
     }
-  };
-
-  const handle1ClickDemoLogin = async () => {
-    setIsDemoLoading(true);
-    setErrorMessage('');
-    try {
-      await login('student@placement.edu', 'Placement2026!');
-      navigate(destination);
-    } catch (err: any) {
-      setErrorMessage(err.message || 'Demo login failed.');
-    } finally {
-      setIsDemoLoading(false);
-    }
-  };
-
-  const handleDemoFill = () => {
-    setEmail('student@placement.edu');
-    setPassword('Placement2026!');
-    setErrorMessage('');
   };
 
   return (
@@ -100,30 +80,11 @@ export const LoginPage: React.FC = () => {
               </div>
             )}
 
-            {/* 1-Click Demo Action Button */}
-            <button
-              type="button"
-              onClick={handle1ClickDemoLogin}
-              disabled={isDemoLoading}
-              className="w-full mb-5 py-2.5 px-4 rounded-xl bg-gradient-to-r from-amber-500/20 via-orange-500/20 to-brand-500/20 hover:from-amber-500/30 hover:to-brand-500/30 text-amber-700 dark:text-amber-300 border border-amber-500/35 font-bold text-xs flex items-center justify-center gap-2 transition-all shadow-xs disabled:opacity-50"
-            >
-              <Zap className="w-4 h-4 text-amber-500 fill-amber-500" />
-              <span>{isDemoLoading ? 'Signing in as Demo Student...' : '⚡ 1-Click Demo Login (Instant Access)'}</span>
-            </button>
-
-            <div className="relative flex py-2 items-center mb-4">
-              <div className="flex-grow border-t border-slate-200 dark:border-slate-750" />
-              <span className="flex-shrink mx-3 text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
-                Or With Credentials
-              </span>
-              <div className="flex-grow border-t border-slate-200 dark:border-slate-750" />
-            </div>
-
             <form onSubmit={handleSubmit} className="space-y-4">
               <Input
                 label="College / Student Email"
                 type="email"
-                placeholder="student@placement.edu"
+                placeholder="name@example.com"
                 value={email}
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEmail(e.target.value)}
                 leftIcon={<Mail className="w-4 h-4" />}
@@ -141,9 +102,12 @@ export const LoginPage: React.FC = () => {
                   required
                 />
                 <div className="flex justify-end">
-                  <a href="#forgot" className="text-xs text-brand-600 dark:text-brand-400 hover:underline">
-                    Forgot password?
-                  </a>
+                  <Link
+                    to="/register"
+                    className="text-xs text-brand-600 dark:text-brand-400 hover:underline"
+                  >
+                    Need a new account? Sign up
+                  </Link>
                 </div>
               </div>
 
@@ -156,18 +120,6 @@ export const LoginPage: React.FC = () => {
                 Sign In to Account
               </Button>
             </form>
-
-            {/* Quick autofill helper */}
-            <div className="mt-4 pt-3 border-t border-slate-100 dark:border-slate-800 text-center">
-              <button
-                type="button"
-                onClick={handleDemoFill}
-                className="text-xs text-slate-500 hover:text-brand-600 dark:hover:text-brand-400 transition-colors inline-flex items-center gap-1 font-medium"
-              >
-                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
-                Auto-fill demo credentials in form
-              </button>
-            </div>
           </CardContent>
         </Card>
 

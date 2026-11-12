@@ -2,6 +2,20 @@ import { Request, Response, NextFunction } from 'express';
 import { AIService } from '../services/aiService.js';
 import { ConversationService } from '../services/conversationService.js';
 
+const resolveMentorUserId = (req: Request): string => {
+  const user = (req as any).user;
+  if (user && !user.isGuest && (user.userId || user.id)) {
+    return String(user.userId || user.id);
+  }
+  return (
+    req.body?.userId ||
+    (req.query?.userId as string) ||
+    user?.userId ||
+    user?.id ||
+    'guest'
+  );
+};
+
 export const analyzeCode = async (
   req: Request,
   res: Response,
@@ -121,7 +135,7 @@ export const solveDoubt = async (
       return;
     }
 
-    const userId = (req as any).user?.id || req.body.userId || 'guest';
+    const userId = resolveMentorUserId(req);
 
     const response = await AIService.solveDoubt({
       doubt: query,
@@ -150,7 +164,7 @@ export const listConversations = async (
   next: NextFunction
 ): Promise<void> => {
   try {
-    const userId = (req as any).user?.id || (req.query.userId as string) || 'guest';
+    const userId = resolveMentorUserId(req);
     const conversations = await ConversationService.listConversations(userId);
     res.status(200).json({
       success: true,
@@ -169,11 +183,21 @@ export const getConversation = async (
 ): Promise<void> => {
   try {
     const { id } = req.params;
+    const userId = resolveMentorUserId(req);
     const result = await ConversationService.getConversationWithMessages(id);
     if (!result) {
       res.status(404).json({
         success: false,
         error: 'Conversation not found',
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+    const convOwner = result.conversation?.userId ? String(result.conversation.userId) : '';
+    if (convOwner && convOwner !== userId) {
+      res.status(403).json({
+        success: false,
+        error: 'Unauthorized to view this conversation.',
         timestamp: new Date().toISOString(),
       });
       return;
@@ -194,12 +218,13 @@ export const createConversation = async (
   next: NextFunction
 ): Promise<void> => {
   try {
-    const userId = (req as any).user?.id || req.body.userId || 'guest';
+    const userId = resolveMentorUserId(req);
     const { title, topic } = req.body;
     const conv = await ConversationService.getOrCreateConversation(
       userId,
       undefined,
-      topic || 'General'
+      topic || 'General',
+      title
     );
     res.status(201).json({
       success: true,
@@ -218,6 +243,25 @@ export const deleteConversation = async (
 ): Promise<void> => {
   try {
     const { id } = req.params;
+    const userId = resolveMentorUserId(req);
+    const existing = await ConversationService.getConversationWithMessages(id);
+    if (!existing) {
+      res.status(404).json({
+        success: false,
+        error: 'Conversation not found',
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+    const convOwner = existing.conversation?.userId ? String(existing.conversation.userId) : '';
+    if (convOwner && convOwner !== userId) {
+      res.status(403).json({
+        success: false,
+        error: 'Unauthorized to delete this conversation.',
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
     const deleted = await ConversationService.deleteConversation(id);
     res.status(200).json({
       success: true,

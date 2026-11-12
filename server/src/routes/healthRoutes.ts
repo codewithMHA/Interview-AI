@@ -15,7 +15,7 @@ router.get('/health', (req: Request, res: Response) => {
     version: '1.0.0',
     database: {
       status: dbStatus.isConnected ? 'connected' : 'disconnected/standby',
-      host: dbStatus.host,
+      ...(env.NODE_ENV !== 'production' ? { host: dbStatus.host } : {}),
       name: dbStatus.name,
     },
     integrations: {

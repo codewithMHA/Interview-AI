@@ -246,7 +246,7 @@ export const LandingPage: React.FC = () => {
             {/* Pill Badge */}
             <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full border border-emerald-500/30 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-400 text-xs font-semibold mb-8 shadow-xs backdrop-blur-md">
               <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping" />
-              <span>The Autonomous Placement Operating System · 2026 Batch</span>
+              <span>AI-Powered Placement Preparation Platform</span>
             </div>
 
             {/* Signature Headline */}
@@ -757,7 +757,7 @@ export const LandingPage: React.FC = () => {
       <section className="py-24 bg-slate-50/50 dark:bg-[#08080c] relative">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="text-center max-w-3xl mx-auto mb-16">
-            <Badge variant="brand" className="mb-2">Unified Placement OS</Badge>
+            <Badge variant="brand" className="mb-2">Unified Placement Platform</Badge>
             <h2 className="text-3xl sm:text-5xl font-black text-slate-900 dark:text-white tracking-tight">
               Next-Gen Placement Architecture
             </h2>
@@ -774,7 +774,7 @@ export const LandingPage: React.FC = () => {
               </div>
               <div className="flex items-center gap-2">
                 <h3 className="text-lg font-bold text-slate-900 dark:text-white">
-                  Interactive AI Interview
+                  Interactive AI Mock Interview
                 </h3>
                 <Badge variant="brand" size="sm">Voice AI</Badge>
               </div>
@@ -783,7 +783,7 @@ export const LandingPage: React.FC = () => {
               </p>
               <div className="pt-2">
                 <Link to="/ai-interview" className="text-xs text-indigo-600 dark:text-indigo-400 font-bold hover:underline flex items-center gap-1">
-                  <span>Start AI Interview</span>
+                  <span>Start AI Mock Interview</span>
                   <ArrowRight className="w-3.5 h-3.5" />
                 </Link>
               </div>

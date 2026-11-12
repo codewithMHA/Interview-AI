@@ -5,6 +5,40 @@ import { verifyToken } from '../utils/token.js';
 import { User } from '../models/User.js';
 import { getDBStatus } from '../config/db.js';
 
+const LEGACY_DEMO_ID = '65f1a2b3c4d5e6f7a8b9c0d1';
+
+/**
+ * Resolves non-ObjectId session IDs only for known demo aliases or MongoDB email matches,
+ * ensuring distinct registered users are never merged into the demo student identity.
+ */
+const normalizeDecodedUser = async (decoded: any): Promise<any> => {
+  if (!mongoose.Types.ObjectId.isValid(decoded.userId)) {
+    const normalizedEmail = decoded.email?.toLowerCase().trim();
+    const isDemoAlias =
+      decoded.userId === 'demo-student-id-101' ||
+      normalizedEmail === 'student@placement.edu' ||
+      normalizedEmail === 'student@demo.com';
+
+    if (getDBStatus().isConnected && normalizedEmail) {
+      try {
+        const dbUser = await User.findOne({ email: normalizedEmail });
+        if (dbUser) {
+          decoded.userId = dbUser._id.toString();
+        } else if (isDemoAlias) {
+          decoded.userId = LEGACY_DEMO_ID;
+        }
+      } catch {
+        if (isDemoAlias) decoded.userId = LEGACY_DEMO_ID;
+      }
+    } else if (isDemoAlias) {
+      decoded.userId = LEGACY_DEMO_ID;
+    }
+  }
+
+  decoded.id = decoded.userId;
+  return decoded;
+};
+
 export const protect = async (
   req: AuthenticatedRequest,
   res: Response,
@@ -24,27 +58,7 @@ export const protect = async (
   const token = authHeader.split(' ')[1];
 
   try {
-    const decoded = verifyToken(token);
-
-    // Seamlessly heal legacy or non-ObjectId session IDs (e.g., demo-student-id-101)
-    if (!mongoose.Types.ObjectId.isValid(decoded.userId)) {
-      if (getDBStatus().isConnected && decoded.email) {
-        try {
-          const dbUser = await User.findOne({ email: decoded.email.toLowerCase().trim() });
-          if (dbUser) {
-            decoded.userId = dbUser._id.toString();
-          } else {
-            decoded.userId = '65f1a2b3c4d5e6f7a8b9c0d1';
-          }
-        } catch {
-          decoded.userId = '65f1a2b3c4d5e6f7a8b9c0d1';
-        }
-      } else {
-        decoded.userId = '65f1a2b3c4d5e6f7a8b9c0d1';
-      }
-    }
-
-    (decoded as any).id = decoded.userId;
+    const decoded = await normalizeDecodedUser(verifyToken(token));
     req.user = decoded;
     next();
   } catch (err: any) {
@@ -65,24 +79,7 @@ export const optionalAuth = async (
   if (authHeader && authHeader.startsWith('Bearer ')) {
     const token = authHeader.split(' ')[1];
     try {
-      const decoded = verifyToken(token);
-      if (!mongoose.Types.ObjectId.isValid(decoded.userId)) {
-        if (getDBStatus().isConnected && decoded.email) {
-          try {
-            const dbUser = await User.findOne({ email: decoded.email.toLowerCase().trim() });
-            if (dbUser) {
-              decoded.userId = dbUser._id.toString();
-            } else {
-              decoded.userId = '65f1a2b3c4d5e6f7a8b9c0d1';
-            }
-          } catch {
-            decoded.userId = '65f1a2b3c4d5e6f7a8b9c0d1';
-          }
-        } else {
-          decoded.userId = '65f1a2b3c4d5e6f7a8b9c0d1';
-        }
-      }
-      (decoded as any).id = decoded.userId;
+      const decoded = await normalizeDecodedUser(verifyToken(token));
       req.user = decoded;
       return next();
     } catch {
@@ -91,7 +88,7 @@ export const optionalAuth = async (
   }
 
   // Gracefully provide demo guest telemetry for visitors
-  let fallbackId = '65f1a2b3c4d5e6f7a8b9c0d1';
+  let fallbackId = LEGACY_DEMO_ID;
   if (getDBStatus().isConnected) {
     try {
       const demoUser = await User.findOne({ email: 'student@demo.com' });

@@ -565,9 +565,113 @@ export const runFullSystemVerification = async (): Promise<boolean> => {
     }
   });
 
+  await runTest('Interview', 'Distinct interview types (Coding, Technical, HR, Python) generate unique non-coding vs coding questions & stay in-track on follow-ups', async () => {
+    const [codingRes, techRes, hrRes, pyRes] = await Promise.all([
+      makeRequest(
+        app,
+        'POST',
+        '/api/mock-interviews/start',
+        {
+          interviewType: 'Coding',
+          role: 'Software Development Engineer',
+          difficulty: 'Intermediate',
+          questionCount: 4,
+        },
+        authToken
+      ),
+      makeRequest(
+        app,
+        'POST',
+        '/api/mock-interviews/start',
+        {
+          interviewType: 'Technical',
+          role: 'Software Development Engineer',
+          difficulty: 'Intermediate',
+          questionCount: 4,
+          resumeText: 'Mohammed Hassan Ahmed\nProjects:\n1. FinTech Ledger API built with PostgreSQL and Redis',
+        },
+        authToken
+      ),
+      makeRequest(
+        app,
+        'POST',
+        '/api/mock-interviews/start',
+        {
+          interviewType: 'HR',
+          role: 'Software Development Engineer',
+          difficulty: 'Beginner',
+          questionCount: 4,
+        },
+        authToken
+      ),
+      makeRequest(
+        app,
+        'POST',
+        '/api/mock-interviews/start',
+        {
+          interviewType: 'Python',
+          role: 'Python Engineer',
+          difficulty: 'Intermediate',
+          questionCount: 4,
+        },
+        authToken
+      ),
+    ]);
+
+    const coding = codingRes.data.data;
+    const tech = techRes.data.data;
+    const hr = hrRes.data.data;
+    const py = pyRes.data.data;
+
+    if (!coding?.codingProblem?.title) {
+      throw new Error('Coding interview must attach a codingProblem');
+    }
+    if (tech?.codingProblem || hr?.codingProblem || py?.codingProblem) {
+      throw new Error('Non-Coding interviews must not pre-attach global codingProblem');
+    }
+    if (coding.questions[0]?.requiresCode) {
+      throw new Error('Coding Question 1 intro should show Talking Points (requiresCode=false) before coding tasks');
+    }
+    if (!coding.questions[1]?.requiresCode) {
+      throw new Error('Coding Question 2+ should enable the Coding IDE (requiresCode=true)');
+    }
+    if (hr.questions.some((q: any) => q.requiresCode)) {
+      throw new Error('HR questions must never trigger the Coding IDE');
+    }
+
+    const codingSet = new Set(coding.questions.slice(1).map((q: any) => q.question));
+    const techSet = new Set(tech.questions.slice(1).map((q: any) => q.question));
+    const hrSet = new Set(hr.questions.slice(1).map((q: any) => q.question));
+    const pySet = new Set(py.questions.slice(1).map((q: any) => q.question));
+
+    for (const qText of codingSet) {
+      if (techSet.has(qText) || hrSet.has(qText) || pySet.has(qText)) {
+        throw new Error(`Duplicate question across different interview tracks: ${qText}`);
+      }
+    }
+
+    // Verify HR submit-answer stays purely HR/Behavioral (never injects Node.js/microservices trivia)
+    const hrId = hr._id || hr.id;
+    const hrNext = await makeRequest(
+      app,
+      'POST',
+      `/api/mock-interviews/${hrId}/submit-answer`,
+      {
+        questionId: hr.questions[0].id,
+        questionIndex: 0,
+        answer: 'I completed my CSE degree and built a campus placement portal while leading a team of three students.',
+      },
+      authToken
+    );
+    const nextHrQ = String(hrNext.data.data?.nextQuestion?.question || '').toLowerCase();
+    if (!nextHrQ || nextHrQ.includes('event loop') || nextHrQ.includes('pessimistic locking') || hrNext.data.data?.nextQuestion?.requiresCode) {
+      throw new Error(`HR next question leaked technical/coding trivia: ${nextHrQ}`);
+    }
+  });
+
   // 8. Placement Analytics & Gamification Suite
   console.log('\n📦 Suite 8: Analytics Intelligence, Radar & Gamification');
-  await runTest('Analytics', 'Fetch analytics dashboard returns dynamic readiness index and radar', async () => {
+  await runTest('Analytics', 'Fetch analytics & dashboard heatmaps return synchronized per-date activity details', async () => {
     const res = await makeRequest(app, 'GET', '/api/analytics/dashboard', undefined, authToken);
     if (res.status !== 200 || !res.data.data?.placementReadinessScore) {
       throw new Error(`Analytics dashboard failed: ${JSON.stringify(res.data)}`);
@@ -578,8 +682,28 @@ export const runFullSystemVerification = async (): Promise<boolean> => {
     if (!res.data.data?.heatmap || res.data.data.heatmap.length !== 30) {
       throw new Error('Analytics missing 30-day activity heatmap');
     }
+    if (!res.data.data?.annualHeatmap || res.data.data.annualHeatmap.length !== 365) {
+      throw new Error('Analytics missing 365-day annual heatmap');
+    }
+    if (!res.data.data?.dailyActivityMap || typeof res.data.data.dailyActivityMap !== 'object') {
+      throw new Error('Analytics missing dailyActivityMap details');
+    }
     if (!res.data.data?.badges || res.data.data.badges.length < 4) {
       throw new Error('Analytics missing achievement badges');
+    }
+
+    const dashRes = await makeRequest(app, 'GET', '/api/dashboard/overview', undefined, authToken);
+    if (dashRes.status !== 200 || !dashRes.data.data) {
+      throw new Error(`Dashboard overview failed: ${JSON.stringify(dashRes.data)}`);
+    }
+    if (!dashRes.data.data.heatmap || dashRes.data.data.heatmap.length !== 30) {
+      throw new Error('Dashboard overview missing 30-day activity heatmap');
+    }
+    if (!dashRes.data.data.annualHeatmap || dashRes.data.data.annualHeatmap.length !== 365) {
+      throw new Error('Dashboard overview missing 365-day annual heatmap');
+    }
+    if (!dashRes.data.data.dailyActivityMap || Object.keys(dashRes.data.data.dailyActivityMap).length === 0) {
+      throw new Error('Dashboard overview missing populated dailyActivityMap breakdown');
     }
   });
 
@@ -817,6 +941,192 @@ export const runFullSystemVerification = async (): Promise<boolean> => {
     if (!prepLevel.includes('Ready') && !prepLevel.includes('Recommended') && !prepLevel.includes('Revision') && !prepLevel.includes('Incomplete')) {
       throw new Error(`Unexpected preparation level terminology: ${prepLevel}`);
     }
+  });
+
+  // =========================================================================
+  // SUITE 11: P0/P1 HARDENING, MULTI-USER ISOLATION, C++ SANDBOX & XP
+  // =========================================================================
+  console.log('\n📦 Suite 11: P0/P1 Hardening, Multi-User Isolation, C++ Execution & XP Persistence');
+
+  await runTest('P0-Report', 'Report persists answerRelevance, completeness & averageScores accurately', async () => {
+    const startRes = await makeRequest(
+      app,
+      'POST',
+      '/api/mock-interviews/start',
+      {
+        interviewType: 'Technical',
+        role: 'Backend Developer',
+        experienceLevel: 'Beginner',
+        difficulty: 'Medium',
+        numberOfQuestions: 3,
+      },
+      authToken
+    );
+    const session = startRes.data?.data;
+    if (startRes.status !== 201 || !session?._id) {
+      throw new Error('Failed to create interview session for report check');
+    }
+
+    const q = session.questions[0];
+    await makeRequest(
+      app,
+      'POST',
+      `/api/mock-interviews/${session._id}/submit-answer`,
+      {
+        questionId: q._id || 'q-0',
+        questionIndex: 0,
+        answer: 'Indexing creates B-Tree lookup structures to avoid full table scans and reduce query latency, trading off extra write amplification and storage overhead.',
+      },
+      authToken
+    );
+
+    const completeRes = await makeRequest(app, 'POST', `/api/mock-interviews/${session._id}/complete`, {}, authToken);
+    if (completeRes.status !== 200) {
+      throw new Error(`Complete interview failed with ${completeRes.status}`);
+    }
+
+    const detailRes = await makeRequest(app, 'GET', `/api/mock-interviews/${session._id}`, undefined, authToken);
+    const saved = detailRes.data?.data;
+    const cats = saved?.report?.categoryScores;
+    if (
+      typeof cats?.answerRelevance !== 'number' ||
+      typeof cats?.completeness !== 'number' ||
+      typeof saved?.report?.averageAnsweredScore !== 'number' ||
+      typeof saved?.averageScores?.completeness !== 'number'
+    ) {
+      throw new Error(`Missing rubric/completeness fields on saved report: ${JSON.stringify(cats)}`);
+    }
+  });
+
+  await runTest('P0-Auth', 'Unknown email + demo password rejected & cross-user mock interview/mentor access returns 403', async () => {
+    const hijackRes = await makeRequest(app, 'POST', '/api/auth/login', {
+      email: `nonexistent.${Date.now()}@example.com`,
+      password: 'Placement2026!',
+    });
+    if (hijackRes.status === 200) {
+      throw new Error('Unknown email logged in via demo bypass!');
+    }
+
+    const peerEmail = `peer.isolation.${Date.now()}@example.com`;
+    const regRes = await makeRequest(app, 'POST', '/api/auth/register', {
+      name: 'Isolation Peer',
+      email: peerEmail,
+      password: 'PeerPassword2026!',
+    });
+    const peerToken = regRes.data?.token;
+    if (!peerToken) {
+      throw new Error(`Peer registration failed (${regRes.status})`);
+    }
+
+    const histRes = await makeRequest(app, 'GET', '/api/mock-interviews', undefined, authToken);
+    const ownerInterviewId = histRes.data?.data?.[0]?._id;
+    if (!ownerInterviewId) {
+      throw new Error('Missing owner interview to test cross-user isolation');
+    }
+
+    const foreignInterviewGet = await makeRequest(app, 'GET', `/api/mock-interviews/${ownerInterviewId}`, undefined, peerToken);
+    if (foreignInterviewGet.status !== 403) {
+      throw new Error(`Expected 403 reading another user mock interview, got ${foreignInterviewGet.status}`);
+    }
+
+    const convCreate = await makeRequest(
+      app,
+      'POST',
+      '/api/ai/conversations',
+      { title: 'Owner Private Chat' },
+      authToken
+    );
+    const ownerConvId = convCreate.data?.data?._id || convCreate.data?.conversation?._id || convCreate.data?.data?.id;
+    if (ownerConvId) {
+      const foreignConvGet = await makeRequest(app, 'GET', `/api/ai/conversations/${ownerConvId}`, undefined, peerToken);
+      if (foreignConvGet.status !== 403) {
+        throw new Error(`Expected 403 accessing another user conversation, got ${foreignConvGet.status}`);
+      }
+    }
+
+    const peerConvsRes = await makeRequest(app, 'GET', '/api/ai/conversations', undefined, peerToken);
+    const peerConvs = peerConvsRes.data?.data || peerConvsRes.data?.conversations || [];
+    if (Array.isArray(peerConvs) && peerConvs.some((c: any) => c.userId === 'guest')) {
+      throw new Error('Authenticated peer user received guest conversations in list!');
+    }
+
+    const ownerScans = await makeRequest(app, 'GET', '/api/resume/history', undefined, authToken);
+    const ownerScanId = ownerScans.data?.data?.[0]?._id;
+    if (ownerScanId) {
+      const foreignScanGet = await makeRequest(app, 'GET', `/api/resume/${ownerScanId}`, undefined, peerToken);
+      if (foreignScanGet.status !== 403) {
+        throw new Error(`Expected 403 accessing another user resume scan, got ${foreignScanGet.status}`);
+      }
+    }
+  });
+
+  await runTest('P1-Judge', 'Python executes natively, C++ either executes via g++ or reports unavailability honestly without faking pass', async () => {
+    const validPy = await makeRequest(app, 'POST', '/api/problems/sandbox-run', {
+      language: 'python',
+      code: 'print(6 * 7)',
+    });
+    if (validPy.status !== 200 || validPy.data?.data?.status !== 'Success' || !String(validPy.data?.data?.stdout).includes('42')) {
+      throw new Error(`Native Python playground failed: ${JSON.stringify(validPy.data)}`);
+    }
+
+    const validCpp = await makeRequest(app, 'POST', '/api/problems/sandbox-run', {
+      language: 'cpp',
+      code: '#include <iostream>\nint main() { std::cout << (6 * 7); return 0; }\n',
+    });
+    const cppRes = validCpp.data?.data;
+    if (cppRes?.status === 'Success') {
+      if (!String(cppRes.stdout).includes('42')) {
+        throw new Error(`Native C++ succeeded without real output 42: ${JSON.stringify(validCpp.data)}`);
+      }
+    } else if (cppRes?.status === 'Runtime Error') {
+      const errMsg = String(cppRes.stderr || '').toLowerCase();
+      if (errMsg.includes('spawn unknown') || errMsg === 'fetch failed' || !errMsg.includes('not available')) {
+        throw new Error(`Unexpected C++ unavailability error: ${JSON.stringify(validCpp.data)}`);
+      }
+    } else {
+      throw new Error(`Unexpected C++ playground response: ${JSON.stringify(validCpp.data)}`);
+    }
+
+    const brokenCpp = await makeRequest(app, 'POST', '/api/problems/sandbox-run', {
+      language: 'cpp',
+      code: '#include <iostream>\nint main() { int x = ; return 0; }\n',
+    });
+    if (brokenCpp.data?.data?.status !== 'Runtime Error') {
+      throw new Error(`Broken C++ must report Runtime Error, got ${JSON.stringify(brokenCpp.data)}`);
+    }
+
+    const javaFakeCheck = await makeRequest(app, 'POST', '/api/problems/two-sum/run', {
+      language: 'java',
+      code: 'class Solution { public int[] twoSum(int[] nums, int target) { for(int i=0;i<1;i++){} return new int[]{}; } }',
+    });
+    if (javaFakeCheck.data?.data?.status === 'Accepted' || (javaFakeCheck.data?.data?.testCasesPassed ?? 0) > 0) {
+      throw new Error(`Java class-only run without javac/working remote Judge0 must not fake Accepted: ${JSON.stringify(javaFakeCheck.data)}`);
+    }
+  });
+
+  await runTest('P1-XP', 'Question toggleComplete persists XP delta to user profile and restores cleanly on untoggle', async () => {
+    const beforeProf = await makeRequest(app, 'GET', '/api/users/profile', undefined, authToken);
+    const beforeXp = beforeProf.data?.data?.xpPoints ?? 0;
+
+    const qRes = await makeRequest(app, 'GET', '/api/questions?page=1&limit=1', undefined, authToken);
+    const qId = qRes.data?.data?.[0]?._id;
+    if (!qId) {
+      throw new Error('No question found to toggle completion');
+    }
+
+    const toggle1 = await makeRequest(app, 'POST', `/api/questions/${qId}/complete`, {}, authToken);
+    if (toggle1.status !== 200) {
+      throw new Error(`toggleComplete failed with ${toggle1.status}`);
+    }
+    const midProf = await makeRequest(app, 'GET', '/api/users/profile', undefined, authToken);
+    const midXp = midProf.data?.data?.xpPoints ?? 0;
+    const expectedDelta = toggle1.data?.isCompleted ? 15 : -15;
+    if (midXp !== Math.max(0, beforeXp + expectedDelta)) {
+      throw new Error(`Expected XP ${Math.max(0, beforeXp + expectedDelta)} after toggle, got ${midXp} (before ${beforeXp})`);
+    }
+
+    // Restore original state cleanly
+    await makeRequest(app, 'POST', `/api/questions/${qId}/complete`, {}, authToken);
   });
 
   // Summary

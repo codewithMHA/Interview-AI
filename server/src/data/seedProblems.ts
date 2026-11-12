@@ -336,7 +336,7 @@ function isAnagram(s, t) {
 }`,
       cpp: `class Solution {
 public:
-    boolean isAnagram(string s, string t) {
+    bool isAnagram(string s, string t) {
         // Write your code here
         return false;
     }

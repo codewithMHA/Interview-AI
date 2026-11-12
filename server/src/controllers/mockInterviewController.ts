@@ -24,6 +24,51 @@ const resolveUserId = async (authReq: AuthenticatedRequest, isConnected: boolean
   return demo ? demo._id.toString() : '65f1a2b3c4d5e6f7a8b9c0d1';
 };
 
+// Shared helper to load a session and verify caller ownership (returns null after writing 404/403)
+const loadOwnedInterview = async (
+  id: string,
+  req: Request,
+  res: Response,
+  isConnected: boolean
+): Promise<any | null> => {
+  let interview: any = null;
+  if (isConnected && mongoose.Types.ObjectId.isValid(id)) {
+    interview = await MockInterview.findById(id);
+  }
+  if (!interview) {
+    interview = await devStore.getMockInterview(id);
+  }
+
+  if (!interview) {
+    res.status(404).json({
+      success: false,
+      error: 'Mock interview session not found.',
+      timestamp: new Date().toISOString(),
+    });
+    return null;
+  }
+
+  const authReq = req as AuthenticatedRequest;
+  const resolvedUid = await resolveUserId(authReq, isConnected);
+  const ownerStr = interview.userId ? interview.userId.toString() : '';
+  const isOwner =
+    (ownerStr !== '' &&
+      (ownerStr === resolvedUid ||
+        (authReq.user?.userId && ownerStr === authReq.user.userId))) ||
+    authReq.user?.role === 'admin';
+
+  if (!isOwner) {
+    res.status(403).json({
+      success: false,
+      error: 'Unauthorized: you do not have access to this interview session.',
+      timestamp: new Date().toISOString(),
+    });
+    return null;
+  }
+
+  return interview;
+};
+
 // =========================================================================
 // 1. START INTERVIEW SESSION
 // =========================================================================
@@ -58,9 +103,9 @@ export const startInterview = async (
       resumeText = '',
       mode = 'mixed',
       title = '',
-      interviewerName = 'Alex Morgan',
+      interviewerName = 'Emily Zhou',
       interviewerRole = 'Senior Engineering Interviewer',
-      interviewerAvatar = 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=400&auto=format&fit=crop&q=80',
+      interviewerAvatar = 'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?w=600&h=600&auto=format&fit=crop&crop=faces,center&q=85',
       resumeTopics,
       roundType = '',
     } = req.body;
@@ -77,26 +122,31 @@ export const startInterview = async (
       : [];
 
     const isCodingInterview = interviewType === 'Coding' || interviewType.toLowerCase().includes('code');
-
-    // Build structured resume topics if provided or if resume text exists
-    let formattedTopics = resumeTopics;
-    if (!formattedTopics && resumeText) {
-      formattedTopics = [
-        { id: 't1', title: 'Candidate Profile & Background', category: 'Profile', description: 'Undergraduate student & core background', status: 'discussing' },
-        { id: 't2', title: 'Technical Stack & Language Internals', category: 'PROFILE', description: 'Web development & problem solving', status: 'not_yet' },
-        { id: 't3', title: 'Core Project Architecture & Design', category: 'PROJECT', description: 'Microservices & event streams', status: 'not_yet' },
-        { id: 't4', title: 'Concurrency, Data Consistency & Scale', category: 'PROJECT', description: 'ACID guarantees and DB locks', status: 'not_yet' },
-        { id: 't5', title: 'Framework & API Implementation', category: 'STACK', description: 'JavaScript event loop & Node.js I/O', status: 'not_yet' },
-        { id: 't6', title: 'Data Structures & Algorithmic Trade-offs', category: 'ALGORITHMS', description: 'Time and space complexity', status: 'not_yet' },
-        { id: 't7', title: 'STAR Behavioral Scenarios', category: 'BEHAVIORAL', description: 'Leadership principles and delivery', status: 'not_yet' },
-        { id: 't8', title: 'Production Reliability & System Design', category: 'SYSTEM DESIGN', description: 'Zero downtime and rate limiting', status: 'not_yet' },
-      ];
-    }
-
     const safeResumeText =
       typeof resumeText === 'string' ? resumeText.replace(/\0/g, '').slice(0, 6000) : '';
 
-    // Generate initial structured questions (AIService handles timeout + instant fallback cleanly)
+    // Pick a varied coding challenge upfront for Coding interviews so Question 2+ can reference it cleanly
+    const codingProblem = isCodingInterview
+      ? AIService.getCodingProblemTemplate(difficulty, skillsList, safeResumeText)
+      : undefined;
+
+    // Build structured resume topics dynamically from uploaded resume/skills if not pre-parsed by client
+    let formattedTopics = resumeTopics;
+    if (!formattedTopics && safeResumeText) {
+      const highlights = AIService.extractResumeHighlights(safeResumeText, skillsList);
+      const stackSummary = highlights.skills.length > 0 ? highlights.skills.join(', ') : interviewType;
+      const primaryProject = highlights.projects[0] || `${interviewType} Project Implementation`;
+      formattedTopics = [
+        { id: 't1', title: 'Candidate Profile & Background', category: 'Profile', description: `${role} · ${experienceLevel}`, status: 'discussing' },
+        { id: 't2', title: `${interviewType} Foundations`, category: 'TRACK', description: `Core concepts and problem solving for ${interviewType}`, status: 'not_yet' },
+        { id: 't3', title: primaryProject, category: 'PROJECT', description: `Architecture, key components, and design choices (${stackSummary})`, status: 'not_yet' },
+        { id: 't4', title: 'Technical Stack & Internals', category: 'STACK', description: stackSummary, status: 'not_yet' },
+        { id: 't5', title: 'Performance, Edge Cases & Trade-offs', category: 'DEPTH', description: 'Latency, memory, concurrency, and failure handling', status: 'not_yet' },
+        { id: 't6', title: 'Behavioral & Ownership (STAR)', category: 'BEHAVIORAL', description: 'Problem debugging, teamwork, and delivery ownership', status: 'not_yet' },
+      ];
+    }
+
+    // Generate track-specific & resume-aware initial questions (preserve exact interviewType!)
     const generatedQuestions = await AIService.generateMockQuestions({
       title: title || `${company ? company + ' ' : ''}${role} ${interviewType} Interview`,
       role,
@@ -104,12 +154,13 @@ export const startInterview = async (
       company: company || 'General Tech',
       customTopics: skillsList,
       difficulty,
-      type: interviewType === 'HR' ? 'HR' : interviewType === 'Behavioral' ? 'Behavioral' : 'Technical',
+      type: interviewType,
       questionCount: count,
       candidateSkills: skillsList,
       resumeText: safeResumeText,
       targetJD: jobDescription || '',
-      roundType: interviewType.toLowerCase().replace(/\s+/g, '_'),
+      roundType: roundType || interviewType.toLowerCase().replace(/\s+/g, '_'),
+      codingProblemTitle: codingProblem?.title,
     });
 
     // Assign stages (Stage 1: Intro, Stage 2: Main, Stage 3: Followup, Stage 4: Scenario, Stage 5: Wrapup)
@@ -127,6 +178,7 @@ export const startInterview = async (
       category: q.category || interviewType,
       difficulty: q.difficulty || difficulty,
       stage: stages[idx] || (idx >= 4 ? 'wrapup' : 'main'),
+      requiresCode: Boolean(q.requiresCode),
       expectedPoints: q.expectedPoints || ['Clear conceptual breakdown', 'Real-world engineering trade-offs'],
       sampleFollowUp: q.sampleFollowUp || 'Can you walk me through the trade-offs of this approach?',
       studentAnswer: undefined,
@@ -134,52 +186,11 @@ export const startInterview = async (
       feedback: undefined,
     }));
 
-    // Ensure Stage 1 is ALWAYS the Introduction & Background question to synchronize with Emily's spoken greeting
-    if (questionsWithStages.length > 0) {
-      const firstQText = (questionsWithStages[0].question || '').toLowerCase();
-      if (!firstQText.includes('yourself') && !firstQText.includes('introduction') && !firstQText.includes('journey')) {
-        questionsWithStages[0] = {
-          id: `q-intro-${Date.now().toString(36)}`,
-          question: `Tell me about yourself, your background in Computer Science, and a brief overview of the key projects you've developed such as your salary or electricity usage tracker.`,
-          category: 'Behavioral',
-          difficulty: 'Beginner',
-          stage: 'introduction',
-          expectedPoints: [
-            'Candidate background, education in Computer Science & engineering journey',
-            'Overview of core projects developed (e.g., Salary tracker, Electricity usage tracker)',
-            'Clear, articulate communication and structured self-introduction',
-          ],
-          sampleFollowUp: 'What motivated you to build the electricity usage tracker, and what was your primary architectural role?',
-          studentAnswer: undefined,
-          answeredAt: undefined,
-          feedback: undefined,
-        };
-      }
-    }
-
-    // Coding Problem template if coding interview mode
-    let codingProblem: any = undefined;
-    if (isCodingInterview) {
-      codingProblem = {
-        title: 'LRU Cache or Distributed Rate Limiter Component',
-        difficulty,
-        description: `Design and implement an efficient caching or rate limiting utility. Your solution must support sub-millisecond retrieval and insertion under concurrency.\n\nKey constraints:\n- Time complexity must be O(1) for lookups and updates.\n- Memory consumption must not exceed O(Capacity).`,
-        constraints: ['Capacity > 0 and Capacity <= 10000', 'Keys and values are positive integers (1 to 10^5)', 'Sub-millisecond latency per operation'],
-        starterCode: {
-          javascript: `class LRUCache {\n  constructor(capacity) {\n    this.capacity = capacity;\n    this.cache = new Map();\n  }\n\n  get(key) {\n    if (!this.cache.has(key)) return -1;\n    const val = this.cache.get(key);\n    this.cache.delete(key);\n    this.cache.set(key, val);\n    return val;\n  }\n\n  put(key, value) {\n    if (this.cache.has(key)) this.cache.delete(key);\n    else if (this.cache.size >= this.capacity) {\n      this.cache.delete(this.cache.keys().next().value);\n    }\n    this.cache.set(key, value);\n  }\n}\n\n// Driver test execution\nconst lru = new LRUCache(2);\nlru.put(1, 100);\nlru.put(2, 200);\nconsole.log("Key 1:", lru.get(1));`,
-          python: `class LRUCache:\n    def __init__(self, capacity: int):\n        self.capacity = capacity\n        self.cache = {}\n\n    def get(self, key: int) -> int:\n        return self.cache.get(key, -1)\n\n    def put(self, key: int, value: int) -> None:\n        self.cache[key] = value\n\nlru = LRUCache(2)\nlru.put(1, 100)\nprint("Key 1:", lru.get(1))`,
-          java: `import java.util.*;\n\nclass Solution {\n    public static void main(String[] args) {\n        System.out.println("Coding Interview Sandbox Initialized");\n    }\n}`,
-          cpp: `#include <iostream>\n#include <unordered_map>\nusing namespace std;\n\nint main() {\n    cout << "Coding Interview Sandbox Initialized" << endl;\n    return 0;\n}`,
-        },
-        sampleInput: 'LRUCache cache = new LRUCache(2); cache.put(1, 1); cache.get(1);',
-        sampleOutput: '1',
-      };
-    }
-
     const sessionData: any = {
       userId: resolvedUid,
       title: title || `${company ? company + ' ' : ''}${role} · ${interviewType}`,
       interviewType,
+      roundType: roundType || interviewType.toLowerCase().replace(/\s+/g, '_'),
       role,
       experienceLevel,
       company: company || '',
@@ -237,6 +248,7 @@ export const submitAnswer = async (
   try {
     const { id } = req.params;
     const { questionId, questionIndex, answer, code, codeLanguage } = req.body;
+    const selectedCodeLang = codeLanguage || req.body.language;
     const authReq = req as AuthenticatedRequest;
     const userId = authReq.user?.userId;
 
@@ -250,29 +262,8 @@ export const submitAnswer = async (
     }
 
     const isConnected = mongoose.connection.readyState === 1;
-    let interview: any = null;
-
-    if (isConnected && mongoose.Types.ObjectId.isValid(id)) {
-      interview = await MockInterview.findById(id);
-    }
-    if (!interview) {
-      interview = await devStore.getMockInterview(id);
-    }
-
-    if (!interview) {
-      res.status(404).json({
-        success: false,
-        error: 'Mock interview session not found.',
-        timestamp: new Date().toISOString(),
-      });
-      return;
-    }
-
-    // Session Ownership Verification
-    const resolvedUid = await resolveUserId(authReq, isConnected);
-    if (interview.userId && interview.userId.toString() !== resolvedUid && interview.userId.toString() !== userId) {
-      // Allow demo user or pass if in dev mode
-    }
+    const interview = await loadOwnedInterview(id, req, res, isConnected);
+    if (!interview) return;
 
     let qIndex = -1;
     if (typeof questionIndex === 'number' && questionIndex >= 0 && questionIndex < interview.questions.length) {
@@ -299,7 +290,7 @@ export const submitAnswer = async (
       try {
         codeExecutionResult = await Judge0Service.executePlayground({
           code,
-          language: codeLanguage || 'javascript',
+          language: selectedCodeLang || 'javascript',
           stdin: '',
         });
       } catch (err: any) {
@@ -309,7 +300,19 @@ export const submitAnswer = async (
 
     // Concurrently evaluate candidate answer AND generate live next question in parallel
     const hasNextQuestion = qIndex + 1 < interview.questions.length;
-    const combinedResponse = cleanAnswer + (code ? `\n\nSubmitted Code Implementation (${codeLanguage || 'code'}):\n${code}` : '');
+    const combinedResponse = cleanAnswer + (code ? `\n\nSubmitted Code Implementation (${selectedCodeLang || 'code'}):\n${code}` : '');
+    const conversationHistory = interview.questions
+      .slice(0, qIndex + 1)
+      .flatMap((qItem: any, idx: number) => {
+        const turns: Array<{ role: 'interviewer' | 'candidate'; text: string }> = [
+          { role: 'interviewer', text: qItem.question },
+        ];
+        const candidateText = idx === qIndex ? combinedResponse : qItem.studentAnswer;
+        if (candidateText) {
+          turns.push({ role: 'candidate', text: String(candidateText).slice(0, 800) });
+        }
+        return turns;
+      });
 
     const [evalResult, nextTurnResult] = await Promise.allSettled([
       AIService.evaluateMockAnswer({
@@ -324,11 +327,16 @@ export const submitAnswer = async (
             role: interview.role,
             company: interview.company,
             roundType: interview.interviewType,
+            subRoundType: interview.roundType,
+            difficulty: interview.difficulty,
+            customTopics: interview.customTopics || [],
             resumeText: (interview.resumeText || '').slice(0, 2500),
             questionNumber: qIndex + 2,
             totalQuestions: interview.questions.length,
             currentQuestion: targetQuestion.question,
             candidateAnswer: combinedResponse,
+            upcomingPlannedQuestion: interview.questions[qIndex + 1],
+            conversationHistory,
           })
         : Promise.resolve(null),
     ]);
@@ -345,7 +353,7 @@ export const submitAnswer = async (
 
     targetQuestion.studentAnswer = cleanAnswer;
     targetQuestion.studentCode = code;
-    targetQuestion.codeLanguage = codeLanguage;
+    targetQuestion.codeLanguage = selectedCodeLang;
     targetQuestion.codeExecutionResult = codeExecutionResult;
     targetQuestion.answeredAt = new Date();
     targetQuestion.feedback = evaluation;
@@ -361,6 +369,7 @@ export const submitAnswer = async (
         nextQ.category = nextTurn.category;
         nextQ.expectedPoints = nextTurn.expectedPoints;
         nextQ.sampleFollowUp = nextTurn.sampleFollowUp;
+        nextQ.requiresCode = Boolean(nextTurn.requiresCode);
 
         // Advance stage
         const stages: Array<'introduction' | 'main' | 'followup' | 'scenario' | 'wrapup'> = [
@@ -378,7 +387,7 @@ export const submitAnswer = async (
         console.warn('Fallback next question applied due to network or empty response');
         const nextQ = interview.questions[qIndex + 1];
         nextQuestionData = nextQ;
-        interviewerSpeech = `Hmm, okay. ${nextQ.question}`;
+        interviewerSpeech = `Alright. ${nextQ.question}`;
       }
     } else {
       // Completed all questions
@@ -387,14 +396,17 @@ export const submitAnswer = async (
       interview.completedAt = new Date();
       interviewerSpeech = `Thank you so much. That concludes all questions for our interview session today. I am generating your AI mock interview assessment report now.`;
 
-      // Generate the complete performance report
-      interview.report = generateComprehensiveReport(interview);
-      interview.overallScore = interview.report.overallScore;
+      // Generate the complete performance report & average breakdown
+      const report = generateComprehensiveReport(interview);
+      interview.report = report;
+      interview.overallScore = report.overallScore;
+      interview.averageScores = report.averageScores;
     }
 
     if (isConnected) {
       interview.markModified('questions');
       if (interview.report) interview.markModified('report');
+      if (interview.averageScores) interview.markModified('averageScores');
       await interview.save();
     } else {
       await devStore.updateMockInterview(id, {
@@ -404,6 +416,7 @@ export const submitAnswer = async (
         completedAt: interview.completedAt,
         report: interview.report,
         overallScore: interview.overallScore,
+        averageScores: interview.averageScores,
       });
     }
 
@@ -436,11 +449,70 @@ export const runCodingInterviewCode = async (
   try {
     const { id } = req.params;
     const { code, language = 'javascript', input = '' } = req.body;
+    const isConnected = mongoose.connection.readyState === 1;
+    const interview = await loadOwnedInterview(id, req, res, isConnected);
+    if (!interview) return;
 
     if (!code || typeof code !== 'string') {
       res.status(400).json({
         success: false,
         error: 'Code string is required for sandbox execution.',
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    const hasStandaloneEntry =
+      /\b(public\s+static\s+void\s+main|int\s+main\s*\(|void\s+main\s*\(|__name__\s*==\s*['"]__main__['"])/.test(
+        code
+      ) || /\b(console\.log|print)\s*\(/.test(code);
+
+    const codingProblem = interview.codingProblem;
+    const sampleCases = Array.isArray(codingProblem?.testCases) && codingProblem.testCases.length > 0
+      ? codingProblem.testCases.slice(0, 3)
+      : codingProblem?.sampleInput !== undefined && codingProblem?.sampleOutput !== undefined
+      ? [{ input: String(codingProblem.sampleInput), expectedOutput: String(codingProblem.sampleOutput) }]
+      : [];
+
+    if (!hasStandaloneEntry && sampleCases.length > 0) {
+      const problemSlug = String(codingProblem?.title || '')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-|-$/g, '');
+
+      const execResult = await Judge0Service.executeCode({
+        code,
+        language: language as any,
+        testCases: sampleCases,
+        problemSlug,
+      });
+
+      const lines = (execResult.testResults || []).map(
+        (tc) =>
+          `Case ${tc.testCaseIndex + 1}: ${tc.status === 'Passed' ? 'PASS' : 'FAIL'} | Input: ${tc.input} | Output: ${
+            tc.actualOutput || '(empty)'
+          }${tc.status === 'Passed' ? '' : ` | Expected: ${tc.expectedOutput}`}`
+      );
+      const caseErrors = (execResult.testResults || [])
+        .map((tc) => tc.error)
+        .filter(Boolean)
+        .join('\n');
+
+      res.status(200).json({
+        success: true,
+        data: {
+          stdout:
+            lines.length > 0
+              ? `Passed ${execResult.testCasesPassed}/${execResult.totalTestCases} test cases\n${lines.join('\n')}`
+              : execResult.status,
+          stderr: execResult.error || caseErrors || '',
+          time: `${execResult.totalRuntime || 0}ms`,
+          executionTime: execResult.totalRuntime || 0,
+          memory: execResult.peakMemory || 0,
+          exitCode: execResult.status === 'Accepted' ? 0 : 1,
+          status: execResult.status,
+          testResults: execResult.testResults,
+        },
         timestamp: new Date().toISOString(),
       });
       return;
@@ -454,7 +526,13 @@ export const runCodingInterviewCode = async (
 
     res.status(200).json({
       success: true,
-      data: result,
+      data: {
+        ...result,
+        stderr: result.stderr || '',
+        time: `${result.executionTime || 0}ms`,
+        memory: 0,
+        exitCode: result.status === 'Success' ? 0 : 1,
+      },
       timestamp: new Date().toISOString(),
     });
   } catch (error) {
@@ -473,23 +551,8 @@ export const completeInterview = async (
   try {
     const { id } = req.params;
     const isConnected = mongoose.connection.readyState === 1;
-
-    let interview: any = null;
-    if (isConnected && mongoose.Types.ObjectId.isValid(id)) {
-      interview = await MockInterview.findById(id);
-    }
-    if (!interview) {
-      interview = await devStore.getMockInterview(id);
-    }
-
-    if (!interview) {
-      res.status(404).json({
-        success: false,
-        error: 'Mock interview session not found.',
-        timestamp: new Date().toISOString(),
-      });
-      return;
-    }
+    const interview = await loadOwnedInterview(id, req, res, isConnected);
+    if (!interview) return;
 
     interview.status = 'completed';
     interview.currentStage = 'completed';
@@ -537,18 +600,22 @@ export const completeInterview = async (
     const report = generateComprehensiveReport(interview);
     interview.report = report;
     interview.overallScore = report.overallScore;
+    interview.averageScores = report.averageScores;
 
     if (isConnected) {
       interview.markModified('questions');
       interview.markModified('report');
+      interview.markModified('averageScores');
       await interview.save();
     } else {
       await devStore.updateMockInterview(id, {
+        questions: interview.questions,
         status: 'completed',
         currentStage: 'completed',
         completedAt: interview.completedAt,
         report,
         overallScore: report.overallScore,
+        averageScores: report.averageScores,
       });
     }
 
@@ -573,23 +640,8 @@ export const getInterview = async (
   try {
     const { id } = req.params;
     const isConnected = mongoose.connection.readyState === 1;
-
-    let interview: any = null;
-    if (isConnected && mongoose.Types.ObjectId.isValid(id)) {
-      interview = await MockInterview.findById(id);
-    }
-    if (!interview) {
-      interview = await devStore.getMockInterview(id);
-    }
-
-    if (!interview) {
-      res.status(404).json({
-        success: false,
-        error: 'Interview session not found.',
-        timestamp: new Date().toISOString(),
-      });
-      return;
-    }
+    const interview = await loadOwnedInterview(id, req, res, isConnected);
+    if (!interview) return;
 
     res.status(200).json({
       success: true,
@@ -665,20 +717,11 @@ export const deleteInterview = async (
 ): Promise<void> => {
   try {
     const { id } = req.params;
-    const authReq = req as AuthenticatedRequest;
     const isConnected = mongoose.connection.readyState === 1;
-    const resolvedUid = await resolveUserId(authReq, isConnected);
+    const interview = await loadOwnedInterview(id, req, res, isConnected);
+    if (!interview) return;
 
     if (isConnected && mongoose.Types.ObjectId.isValid(id)) {
-      const interview = await MockInterview.findById(id);
-      if (!interview) {
-        res.status(404).json({ success: false, error: 'Interview session not found.' });
-        return;
-      }
-      if (interview.userId.toString() !== resolvedUid && interview.userId.toString() !== authReq.user?.userId) {
-        res.status(403).json({ success: false, error: 'Unauthorized to delete this interview.' });
-        return;
-      }
       await MockInterview.findByIdAndDelete(id);
     } else {
       await devStore.deleteMockInterview(id);
@@ -694,46 +737,47 @@ export const deleteInterview = async (
   }
 };
 
-export const updateCandidateNotes = async (req: Request, res: Response): Promise<void> => {
-  const { id } = req.params;
-  const { notes } = req.body;
-  const isConnected = mongoose.connection.readyState === 1;
+export const updateCandidateNotes = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+  try {
+    const { id } = req.params;
+    const { notes } = req.body;
+    const isConnected = mongoose.connection.readyState === 1;
+    const interview = await loadOwnedInterview(id, req, res, isConnected);
+    if (!interview) return;
 
-  if (isConnected && mongoose.Types.ObjectId.isValid(id)) {
-    await MockInterview.findByIdAndUpdate(id, { candidateNotes: notes });
-  } else {
-    await devStore.updateMockInterview(id, { candidateNotes: notes });
+    if (isConnected && mongoose.Types.ObjectId.isValid(id)) {
+      await MockInterview.findByIdAndUpdate(id, { candidateNotes: notes });
+    } else {
+      await devStore.updateMockInterview(id, { candidateNotes: notes });
+    }
+
+    res.status(200).json({ success: true, message: 'Notes saved' });
+  } catch (error) {
+    next(error);
   }
-
-  res.status(200).json({ success: true, message: 'Notes saved' });
 };
 
-export const updateTopicStatus = async (req: Request, res: Response): Promise<void> => {
+export const updateTopicStatus = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
     const { id, topicId } = req.params;
     const { status } = req.body;
     const isConnected = mongoose.connection.readyState === 1;
+    const interview = await loadOwnedInterview(id, req, res, isConnected);
+    if (!interview) return;
 
-    if (isConnected) {
-      const interview = await MockInterview.findById(id);
-      if (interview && interview.resumeTopics) {
-        interview.resumeTopics = interview.resumeTopics.map((t: any) =>
-          t.id === topicId ? { ...t, status: status || 'discussed' } : t
-        );
+    if (interview.resumeTopics) {
+      interview.resumeTopics = interview.resumeTopics.map((t: any) =>
+        t.id === topicId ? { ...t, status: status || 'discussed' } : t
+      );
+      if (isConnected && mongoose.Types.ObjectId.isValid(id)) {
         await interview.save();
-      }
-    } else {
-      const interview = await devStore.getMockInterview(id);
-      if (interview && interview.resumeTopics) {
-        interview.resumeTopics = interview.resumeTopics.map((t: any) =>
-          t.id === topicId ? { ...t, status: status || 'discussed' } : t
-        );
+      } else {
         await devStore.updateMockInterview(id, { resumeTopics: interview.resumeTopics });
       }
     }
     res.status(200).json({ success: true, message: 'Topic updated' });
   } catch (error) {
-    res.status(200).json({ success: true, message: 'Topic updated' });
+    next(error);
   }
 };
 
@@ -751,18 +795,30 @@ function generateComprehensiveReport(interview: any): any {
 
   // Handle case where candidate exits or ends session without providing answers
   if (answeredCount === 0) {
+    const zeroAverages = {
+      correctness: 0,
+      technicalDepth: 0,
+      clarity: 0,
+      confidence: 0,
+      completeness: 0,
+      communication: 0,
+      relevance: 0,
+    };
     return {
       overallScore: 0,
+      averageAnsweredScore: 0,
       completionStatus: 'incomplete',
       questionsAnswered: 0,
       questionsSkipped: totalQuestions,
       totalDurationMinutes: interview.duration || 30,
+      averageScores: zeroAverages,
       categoryScores: {
         technicalKnowledge: 0,
         communicationClarity: 0,
         problemSolving: 0,
         answerRelevance: 0,
         conceptualUnderstanding: 0,
+        completeness: 0,
       },
       detailedFeedback: {
         strongAnswers: [],
@@ -798,6 +854,7 @@ function generateComprehensiveReport(interview: any): any {
     confidence: 0,
     completeness: 0,
     communication: 0,
+    relevance: 0,
   };
 
   const strongAnswers: string[] = [];
@@ -811,13 +868,22 @@ function generateComprehensiveReport(interview: any): any {
     const hasAnswer = (q.studentAnswer && q.studentAnswer.trim().length > 0) || (q.studentCode && q.studentCode.trim().length > 0);
 
     if (fb && hasAnswer) {
+      const qCorrectness = fb.rubricBreakdown?.technicalCorrectness ?? fb.scores?.correctness ?? 0;
+      const qDepth = fb.rubricBreakdown?.problemSolving ?? fb.scores?.technicalDepth ?? 0;
+      const qComm = fb.rubricBreakdown?.communication ?? fb.scores?.communication ?? 0;
+      const qRel = fb.rubricBreakdown?.relevance ?? fb.scores?.completeness ?? 0;
+      const qComp = fb.rubricBreakdown?.completeness ?? fb.scores?.completeness ?? 0;
+      const qClarity = fb.scores?.clarity ?? qComm;
+      const qConfidence = fb.scores?.confidence ?? qComm;
+
       totalScore += fb.overallScore || 0;
-      totals.correctness += fb.scores?.correctness || 0;
-      totals.technicalDepth += fb.scores?.technicalDepth || 0;
-      totals.clarity += fb.scores?.clarity || 0;
-      totals.confidence += fb.scores?.confidence || 0;
-      totals.completeness += fb.scores?.completeness || 0;
-      totals.communication += fb.scores?.communication || 0;
+      totals.correctness += qCorrectness;
+      totals.technicalDepth += qDepth;
+      totals.clarity += qClarity;
+      totals.confidence += qConfidence;
+      totals.completeness += qComp;
+      totals.communication += qComm;
+      totals.relevance += qRel;
 
       if (fb.overallScore >= 75) {
         strongAnswers.push(`Question: "${q.question}" - Strong explanation of core mechanics.`);
@@ -864,18 +930,37 @@ function generateComprehensiveReport(interview: any): any {
   const averageAnsweredScore = Math.round(totalScore / divisor);
 
   // Overall score blends performance on answered questions with completion factor
-  // If all questions were completed, overallScore is purely the average.
-  // If session ended early, completion ratio scales it fairly without crushing answered performance.
-  const completionRatio = answeredCount / totalQuestions;
+  // If all questions were completed, overallScore equals averageAnsweredScore.
+  // If session ended early, completion ratio scales it transparently without inflating partial attempts.
+  const completionRatio = answeredCount / Math.max(1, totalQuestions);
   const overallScore = Math.min(100, Math.max(0, Math.round(averageAnsweredScore * (0.55 + 0.45 * completionRatio))));
 
-  // Category scores (out of 100) normalized across answered questions
+  const avgCorrectness = Math.min(100, Math.round(totals.correctness / divisor));
+  const avgDepth = Math.min(100, Math.round(totals.technicalDepth / divisor));
+  const avgComm = Math.min(100, Math.round(totals.communication / divisor));
+  const avgRel = Math.min(100, Math.round(totals.relevance / divisor));
+  const avgComp = Math.min(100, Math.round(totals.completeness / divisor));
+  const avgClarity = Math.min(100, Math.round(totals.clarity / divisor));
+  const avgConfidence = Math.min(100, Math.round(totals.confidence / divisor));
+
+  // Category scores (out of 100) aligned directly with the 5-dimension evaluation rubric
   const categoryScores = {
-    technicalKnowledge: Math.min(100, Math.round(totals.technicalDepth / divisor)),
-    communicationClarity: Math.min(100, Math.round(totals.communication / divisor)),
-    problemSolving: Math.min(100, Math.round(totals.correctness / divisor)),
-    answerRelevance: Math.min(100, Math.round(totals.completeness / divisor)),
-    conceptualUnderstanding: Math.min(100, Math.round(totals.clarity / divisor)),
+    technicalKnowledge: avgDepth,
+    communicationClarity: avgComm,
+    problemSolving: avgCorrectness,
+    answerRelevance: avgRel,
+    conceptualUnderstanding: avgClarity,
+    completeness: avgComp,
+  };
+
+  const averageScores = {
+    correctness: avgCorrectness,
+    technicalDepth: avgDepth,
+    clarity: avgClarity,
+    confidence: avgConfidence,
+    completeness: avgComp,
+    communication: avgComm,
+    relevance: avgRel,
   };
 
   const prepLevel =
@@ -894,10 +979,12 @@ function generateComprehensiveReport(interview: any): any {
 
   return {
     overallScore,
+    averageAnsweredScore,
     completionStatus: answeredCount === totalQuestions ? 'completed' : 'partially_completed',
     questionsAnswered: answeredCount,
-    questionsSkipped: totalQuestions - answeredCount,
+    questionsSkipped: Math.max(0, totalQuestions - answeredCount),
     totalDurationMinutes: interview.duration || 30,
+    averageScores,
     categoryScores,
     detailedFeedback: {
       strongAnswers: strongAnswers.slice(0, 3),

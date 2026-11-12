@@ -1,29 +1,41 @@
-import React from 'react';
+import React, { Suspense, lazy } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { ThemeProvider } from '@/context/ThemeContext';
 import { AuthProvider } from '@/context/AuthContext';
 import { MainLayout } from '@/components/layout/MainLayout';
 import { ProtectedRoute } from '@/components/common/ProtectedRoute';
 import { LandingPage } from '@/pages/LandingPage';
-import { LoginPage } from '@/pages/LoginPage';
-import { RegisterPage } from '@/pages/RegisterPage';
-import { DashboardPage } from '@/pages/DashboardPage';
-import { ProfilePage } from '@/pages/ProfilePage';
-import { CareerSetupPage } from '@/pages/CareerSetupPage';
-import { QuestionBankPage } from '@/pages/QuestionBankPage';
-import { PlacementModulesPage } from '@/pages/PlacementModulesPage';
-import { CodingPracticePage } from '@/pages/CodingPracticePage';
-import { ProblemWorkspacePage } from '@/pages/ProblemWorkspacePage';
-import { MockInterviewSetupPage } from '@/pages/MockInterviewSetupPage';
-import { MockInterviewSessionPage } from '@/pages/MockInterviewSessionPage';
-import { MockInterviewResultPage } from '@/pages/MockInterviewResultPage';
-import { PracticeSandboxPage } from '@/pages/PracticeSandboxPage';
-import { RoadmapPage } from '@/pages/RoadmapPage';
-import { AnalyticsPage } from '@/pages/AnalyticsPage';
-import { ResumeScannerPage } from '@/pages/ResumeScannerPage';
-import { AIChatPage } from '@/pages/AIChatPage';
-import { NotFoundPage } from '@/pages/NotFoundPage';
 import { ScrollToTop } from '@/components/common/ScrollToTop';
+
+const lazyPage = <T extends Record<string, React.ComponentType<any>>, K extends keyof T>(
+  loader: () => Promise<T>,
+  exportName: K
+) => lazy(() => loader().then((m) => ({ default: m[exportName] })));
+
+const LoginPage = lazyPage(() => import('@/pages/LoginPage'), 'LoginPage');
+const RegisterPage = lazyPage(() => import('@/pages/RegisterPage'), 'RegisterPage');
+const DashboardPage = lazyPage(() => import('@/pages/DashboardPage'), 'DashboardPage');
+const ProfilePage = lazyPage(() => import('@/pages/ProfilePage'), 'ProfilePage');
+const CareerSetupPage = lazyPage(() => import('@/pages/CareerSetupPage'), 'CareerSetupPage');
+const QuestionBankPage = lazyPage(() => import('@/pages/QuestionBankPage'), 'QuestionBankPage');
+const PlacementModulesPage = lazyPage(() => import('@/pages/PlacementModulesPage'), 'PlacementModulesPage');
+const CodingPracticePage = lazyPage(() => import('@/pages/CodingPracticePage'), 'CodingPracticePage');
+const ProblemWorkspacePage = lazyPage(() => import('@/pages/ProblemWorkspacePage'), 'ProblemWorkspacePage');
+const MockInterviewSetupPage = lazyPage(() => import('@/pages/MockInterviewSetupPage'), 'MockInterviewSetupPage');
+const MockInterviewSessionPage = lazyPage(() => import('@/pages/MockInterviewSessionPage'), 'MockInterviewSessionPage');
+const MockInterviewResultPage = lazyPage(() => import('@/pages/MockInterviewResultPage'), 'MockInterviewResultPage');
+const PracticeSandboxPage = lazyPage(() => import('@/pages/PracticeSandboxPage'), 'PracticeSandboxPage');
+const RoadmapPage = lazyPage(() => import('@/pages/RoadmapPage'), 'RoadmapPage');
+const AnalyticsPage = lazyPage(() => import('@/pages/AnalyticsPage'), 'AnalyticsPage');
+const ResumeScannerPage = lazyPage(() => import('@/pages/ResumeScannerPage'), 'ResumeScannerPage');
+const AIChatPage = lazyPage(() => import('@/pages/AIChatPage'), 'AIChatPage');
+const NotFoundPage = lazyPage(() => import('@/pages/NotFoundPage'), 'NotFoundPage');
+
+const RouteFallback: React.FC = () => (
+  <div className="min-h-[60vh] flex items-center justify-center">
+    <div className="w-8 h-8 border-2 border-indigo-500/30 border-t-indigo-500 rounded-full animate-spin" />
+  </div>
+);
 
 export const App: React.FC = () => {
   return (
@@ -31,7 +43,8 @@ export const App: React.FC = () => {
       <AuthProvider>
         <Router>
           <ScrollToTop />
-          <Routes>
+          <Suspense fallback={<RouteFallback />}>
+            <Routes>
             <Route element={<MainLayout />}>
               {/* Public Exploration & Practice Routes */}
               <Route path="/" element={<LandingPage />} />
@@ -199,6 +212,7 @@ export const App: React.FC = () => {
               <Route path="*" element={<NotFoundPage />} />
             </Route>
           </Routes>
+          </Suspense>
         </Router>
       </AuthProvider>
     </ThemeProvider>

@@ -31,20 +31,11 @@ import { InterviewStreakCalendar } from '@/components/common/LeetCodeStreakCalen
 import { Zap } from 'lucide-react';
 
 export const DashboardPage: React.FC = () => {
-  const { user, profile, isAuthenticated, login } = useAuth();
+  const { user, profile, isAuthenticated } = useAuth();
   const navigate = useNavigate();
 
   const [overview, setOverview] = useState<DashboardOverview | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
-
-  const handleDemoLogin = async () => {
-    try {
-      await login('student@demo.com', 'password123');
-      loadDashboard();
-    } catch (err) {
-      console.error(err);
-    }
-  };
 
   const loadDashboard = async () => {
     setIsLoading(true);
@@ -65,6 +56,11 @@ export const DashboardPage: React.FC = () => {
   const studentName = user?.name ? user.name.split(' ')[0] : 'Student';
   const roleTitle = overview?.targetRole || profile?.targetRole || 'Full Stack Developer';
   const streak = overview?.streakCount ?? profile?.streakCount ?? 0;
+  const bestStreak = overview?.bestStreak ?? streak;
+  const activityMap = overview?.activityMap ?? {};
+  const dailyActivityMap = overview?.dailyActivityMap ?? {};
+  const heatmap = overview?.heatmap ?? [];
+  const annualHeatmap = overview?.annualHeatmap ?? [];
   const xp = overview?.xpPoints ?? profile?.xpPoints ?? 0;
   const level = overview?.level ?? profile?.level ?? 1;
   const prepScore = overview?.preparationScore ?? profile?.preparationScore ?? 0;
@@ -398,7 +394,7 @@ export const DashboardPage: React.FC = () => {
 
             <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2 pt-1">
               {[
-                { title: 'AI Interview', href: '/ai-interview', badge: 'Voice AI' },
+                { title: 'AI Mock Interview', href: '/ai-interview', badge: 'Voice AI' },
                 { title: 'DSA Sandbox', href: '/coding', badge: '15 Qs' },
                 { title: 'Complexity', href: '/practice-sandbox', badge: '15 Qs' },
                 { title: 'ATS Scanner', href: '/resume-scanner', badge: 'AI ATS' },
@@ -468,7 +464,7 @@ export const DashboardPage: React.FC = () => {
                 <div className="w-9 h-9 rounded-lg bg-indigo-50 dark:bg-indigo-950 text-indigo-600 dark:text-indigo-400 flex items-center justify-center mb-3">
                   <Bot className="w-5 h-5" />
                 </div>
-                <h4 className="font-semibold text-sm text-slate-900 dark:text-white">AI Interview</h4>
+                <h4 className="font-semibold text-sm text-slate-900 dark:text-white">AI Mock Interview</h4>
                 <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
                   Live voice call interview probing your skills and projects.
                 </p>
@@ -513,13 +509,6 @@ export const DashboardPage: React.FC = () => {
               </Button>
             </CardContent>
           </Card>
-
-          {/* InterviewAI Daily Challenge & Streak Calendar */}
-          <InterviewStreakCalendar
-            currentStreak={streak}
-            bestStreak={Math.max(streak, 5)}
-            showAnnualToggle={false}
-          />
 
           <Card className="border border-slate-200 dark:border-slate-800">
             <CardHeader className="pb-3">
@@ -572,6 +561,19 @@ export const DashboardPage: React.FC = () => {
           </Card>
         </div>
       </div>
+
+      {/* Unified Consistency Engine & 365-Day Activity Heatmap */}
+      <InterviewStreakCalendar
+        currentStreak={streak}
+        bestStreak={bestStreak}
+        activityMap={activityMap}
+        dailyActivityMap={dailyActivityMap}
+        heatmap={heatmap}
+        annualHeatmap={annualHeatmap}
+        showAnnualToggle={true}
+        layout="split"
+        defaultView="annual"
+      />
     </div>
   );
 };

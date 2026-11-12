@@ -12,6 +12,8 @@ import {
   Check,
   Plus,
   Trash2,
+  History,
+  MessageSquare,
   BookOpen,
   Code2,
   Briefcase,
@@ -28,8 +30,16 @@ import {
   solveDoubtWithAI,
   DoubtSolverResponse,
   fetchConversations,
+  fetchConversationMessages,
+  deleteConversationById,
   ConversationSummaryItem
 } from '@/services/aiService';
+import {
+  loadSavedMentorSessions,
+  saveMentorSession,
+  deleteSavedMentorSession,
+  SavedMentorSession,
+} from '@/utils/mentorHistory';
 
 interface ChatMessage {
   id: string;
@@ -81,58 +91,66 @@ const STARTER_QUESTIONS = [
   }
 ];
 
+const createWelcomeMessages = (): ChatMessage[] => [
+  {
+    id: 'msg_initial',
+    sender: 'ai',
+    text: "👋 Welcome to your **AI Placement Mentor & Coding Assistant**!\n\nYou are starting in a fresh chat. All your past conversations remain safely saved in **Chat History**.\n\nAsk me any doubt, paste code to debug, or pick one of the curated starter prompts below.",
+    timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    keyPoints: [
+      'Full conversational memory: follow up on any previous explanation naturally',
+      'Saved history: revisit any previous topic anytime from the left History panel',
+      'Trained on real interview rubrics from Google, Amazon, Microsoft, and top startups'
+    ],
+    suggestedFollowUps: [
+      'Explain Time & Space Complexity of QuickSort vs MergeSort',
+      'What happens under the hood when typing google.com in a browser?',
+      'How to answer "Why should we hire you?" with confidence'
+    ]
+  }
+];
+
 export const AIChatPage: React.FC = () => {
   const [selectedTopic, setSelectedTopic] = useState<string>('General');
-  const [conversationId, setConversationId] = useState<string>(() => {
-    return localStorage.getItem('interviewai_chat_conv_id') || `conv_${Date.now()}`;
-  });
+  const [conversationId, setConversationId] = useState<string>(() => `conv_${Date.now()}`);
   const [inputQuery, setInputQuery] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [isSpeaking, setIsSpeaking] = useState<string | null>(null);
   const [isListening, setIsListening] = useState(false);
+  const [savedSessions, setSavedSessions] = useState<SavedMentorSession[]>(() =>
+    loadSavedMentorSessions()
+  );
   const [recentConversations, setRecentConversations] = useState<ConversationSummaryItem[]>([]);
 
-  const [messages, setMessages] = useState<ChatMessage[]>(() => {
-    const saved = localStorage.getItem('interviewai_fullscreen_chat');
-    if (saved) {
-      try {
-        return JSON.parse(saved);
-      } catch {
-        // ignore
-      }
-    }
-    return [
-      {
-        id: 'msg_initial',
-        sender: 'ai',
-        text: "👋 Welcome to your **AI Placement Mentor & Coding Assistant**!\n\nI am engineered to help you master Data Structures, System Design, Operating Systems, DBMS, and behavioral HR rounds for Tier-1, Unicorn, and IT placement drives.\n\nAsk me any doubt, paste code to debug, or pick one of the curated starter prompts below.",
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        keyPoints: [
-          'Full conversational memory: follow up on any previous explanation naturally',
-          'Voice enabled: click "Listen" to hear any answer aloud or use the microphone',
-          'Trained on real interview rubrics from Google, Amazon, Microsoft, and top startups'
-        ],
-        suggestedFollowUps: [
-          'Explain Time & Space Complexity of QuickSort vs MergeSort',
-          'What happens under the hood when typing google.com in a browser?',
-          'How to answer "Why should we hire you?" with confidence'
-        ]
-      }
-    ];
-  });
+  // Start every visit on a clean New Chat while preserving past sessions in Chat History
+  const [messages, setMessages] = useState<ChatMessage[]>(() => createWelcomeMessages());
 
-  const chatBottomRef = useRef<HTMLDivElement | null>(null);
+  const messagesContainerRef = useRef<HTMLDivElement | null>(null);
+  const shouldScrollOnUserSendRef = useRef(false);
   const speechRef = useRef<any>(null);
 
   useEffect(() => {
-    localStorage.setItem('interviewai_fullscreen_chat', JSON.stringify(messages.slice(-30)));
-    localStorage.setItem('interviewai_chat_conv_id', conversationId);
-  }, [messages, conversationId]);
+    if (messages.some((m) => m.sender === 'user')) {
+      setSavedSessions(
+        saveMentorSession({
+          id: conversationId,
+          topic: selectedTopic,
+          messages,
+        })
+      );
+    }
+  }, [messages, conversationId, selectedTopic]);
 
+  // Only scroll inside the inner chat pane when the user sends a new question (never on open/mount or AI reply)
   useEffect(() => {
-    chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, isTyping]);
+    if (!shouldScrollOnUserSendRef.current) return;
+    shouldScrollOnUserSendRef.current = false;
+    const container = messagesContainerRef.current;
+    if (container && container.scrollHeight > container.clientHeight) {
+      container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' });
+    }
+  }, [messages]);
 
   // Load conversation list from backend if available
   useEffect(() => {
@@ -221,22 +239,85 @@ export const AIChatPage: React.FC = () => {
     setTimeout(() => setCopiedId(null), 2000);
   };
 
+  const mergedHistory = React.useMemo(() => {
+    const map = new Map<
+      string,
+      { id: string; title: string; topic: string; updatedAt: string; messageCount: number }
+    >();
+    savedSessions.forEach((s) => {
+      map.set(s.id, {
+        id: s.id,
+        title: s.title,
+        topic: s.topic,
+        updatedAt: s.updatedAt,
+        messageCount: s.messages.length,
+      });
+    });
+    recentConversations.forEach((c) => {
+      if (!map.has(c._id)) {
+        map.set(c._id, {
+          id: c._id,
+          title: c.title,
+          topic: c.topic || 'General',
+          updatedAt: c.updatedAt,
+          messageCount: c.messageCount,
+        });
+      }
+    });
+    return Array.from(map.values()).sort(
+      (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
+    );
+  }, [savedSessions, recentConversations]);
+
   const startNewChat = () => {
     const newId = `conv_${Date.now()}`;
     setConversationId(newId);
-    setMessages([
-      {
-        id: `msg_${Date.now()}`,
-        sender: 'ai',
-        text: '✨ New session started! What problem, algorithm, or placement doubt are we solving today?',
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        suggestedFollowUps: [
-          'Explain Inorder, Preorder, and Postorder tree traversals',
-          'Explain how Kafka handles message ordering',
-          'Mock behavioral question: Conflict resolution with teammate'
-        ]
+    setMessages(createWelcomeMessages());
+  };
+
+  const handleLoadSession = async (sessionId: string) => {
+    const localSession = savedSessions.find((s) => s.id === sessionId);
+    if (localSession && localSession.messages.length > 0) {
+      setConversationId(localSession.id);
+      if (localSession.topic) setSelectedTopic(localSession.topic);
+      setMessages(localSession.messages);
+      return;
+    }
+
+    try {
+      const data = await fetchConversationMessages(sessionId);
+      if (data?.messages && data.messages.length > 0) {
+        const mapped: ChatMessage[] = data.messages.map((m: any) => ({
+          id: m._id || m.id || `msg_${Math.random()}`,
+          sender: m.role === 'assistant' ? 'ai' : 'user',
+          text: m.content,
+          timestamp: m.createdAt
+            ? new Date(m.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+            : 'Saved',
+          keyPoints: m.data?.keyPoints,
+          codeSnippet: m.data?.codeSnippet || undefined,
+          interviewTip: m.data?.interviewTip,
+          suggestedFollowUps: m.data?.suggestedFollowUps,
+        }));
+        setConversationId(sessionId);
+        if (data.conversation?.topic) setSelectedTopic(data.conversation.topic);
+        setMessages(mapped);
       }
-    ]);
+    } catch {
+      // ignore load failure
+    }
+  };
+
+  const handleDeleteSession = async (e: React.MouseEvent, sessionId: string) => {
+    e.stopPropagation();
+    setSavedSessions(deleteSavedMentorSession(sessionId));
+    setRecentConversations((prev) => prev.filter((c) => c._id !== sessionId));
+    if (/^[a-f\d]{24}$/i.test(sessionId) || sessionId.startsWith('conv-')) {
+      deleteConversationById(sessionId).catch(() => {});
+    }
+    if (conversationId === sessionId) {
+      startNewChat();
+    }
   };
 
   const handleSend = async (overrideQuery?: string) => {
@@ -250,15 +331,19 @@ export const AIChatPage: React.FC = () => {
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     };
 
+    shouldScrollOnUserSendRef.current = true;
     setMessages((prev) => [...prev, userMessage]);
     setInputQuery('');
     setIsTyping(true);
 
     try {
-      const historyContext = messages.slice(-8).map((m) => ({
-        sender: m.sender,
-        message: m.text
-      }));
+      const historyContext = messages
+        .filter((m) => m.id !== 'msg_welcome')
+        .slice(-8)
+        .map((m) => ({
+          sender: m.sender,
+          message: m.text
+        }));
 
       const res: DoubtSolverResponse = await solveDoubtWithAI({
         doubt: text,
@@ -268,7 +353,8 @@ export const AIChatPage: React.FC = () => {
         role: 'Software Engineer'
       });
 
-      if (res.conversationId) {
+      if (res.conversationId && res.conversationId !== conversationId) {
+        deleteSavedMentorSession(conversationId);
         setConversationId(res.conversationId);
       }
 
@@ -309,9 +395,9 @@ export const AIChatPage: React.FC = () => {
   };
 
   return (
-    <div className="min-h-[calc(100vh-64px)] bg-slate-50 dark:bg-slate-950 flex flex-col lg:flex-row">
+    <div className="min-h-[calc(100vh-64px)] lg:h-[calc(100vh-64px)] lg:overflow-hidden bg-slate-50 dark:bg-slate-950 flex flex-col lg:flex-row">
       {/* 1. Left Sidebar: Topic Navigation & Starter Chips */}
-      <div className="w-full lg:w-80 border-b lg:border-b-0 lg:border-r border-slate-200 dark:border-slate-800 bg-white/70 dark:bg-slate-900/60 backdrop-blur-xl p-4 flex flex-col justify-between shrink-0">
+      <div className="w-full lg:w-80 lg:h-full lg:overflow-y-auto border-b lg:border-b-0 lg:border-r border-slate-200 dark:border-slate-800 bg-white/70 dark:bg-slate-900/60 backdrop-blur-xl p-4 flex flex-col justify-between shrink-0">
         <div className="space-y-5">
           {/* Top Brand & New Chat */}
           <div className="flex items-center justify-between">
@@ -326,9 +412,58 @@ export const AIChatPage: React.FC = () => {
             </div>
 
             <Button size="sm" variant="outline" onClick={startNewChat} leftIcon={<Plus className="w-3.5 h-3.5" />}>
-              New
+              New Chat
             </Button>
           </div>
+
+          {/* Saved Chat History */}
+          {mergedHistory.length > 0 && (
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500 flex items-center justify-between">
+                <span className="flex items-center gap-1">
+                  <History className="w-3 h-3 text-indigo-500" />
+                  Saved Chat History
+                </span>
+                <span className="text-[10px] font-semibold text-slate-400">
+                  {mergedHistory.length}
+                </span>
+              </label>
+              <div className="space-y-1 max-h-44 overflow-y-auto pr-1">
+                {mergedHistory.map((item) => {
+                  const isActive = item.id === conversationId;
+                  return (
+                    <div
+                      key={item.id}
+                      onClick={() => handleLoadSession(item.id)}
+                      className={`group flex items-center justify-between gap-2 px-2.5 py-2 rounded-xl border text-xs cursor-pointer transition-all ${
+                        isActive
+                          ? 'bg-brand-50 dark:bg-brand-950/60 border-brand-200 dark:border-brand-800 text-brand-700 dark:text-brand-300'
+                          : 'bg-slate-50/70 dark:bg-slate-800/40 border-slate-200/70 dark:border-slate-800 text-slate-700 dark:text-slate-300 hover:border-brand-300 dark:hover:border-brand-700'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2 min-w-0 flex-1">
+                        <MessageSquare className="w-3.5 h-3.5 shrink-0 text-slate-400" />
+                        <div className="min-w-0">
+                          <p className="font-semibold truncate text-[11px]">{item.title}</p>
+                          <p className="text-[10px] text-slate-400 truncate">
+                            {item.topic} · {item.messageCount} msgs
+                          </p>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={(e) => handleDeleteSession(e, item.id)}
+                        title="Delete saved chat"
+                        className="p-1 rounded-lg opacity-0 group-hover:opacity-100 text-slate-400 hover:text-rose-500 hover:bg-rose-500/10 transition-all shrink-0"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
 
           {/* Track Filter */}
           <div className="space-y-1.5">
@@ -402,9 +537,12 @@ export const AIChatPage: React.FC = () => {
       </div>
 
       {/* 2. Main Chat Area */}
-      <div className="flex-1 flex flex-col justify-between max-w-5xl mx-auto w-full h-[calc(100vh-64px)]">
+      <div className="flex-1 flex flex-col justify-between max-w-5xl mx-auto w-full h-[calc(100vh-64px)] lg:h-full">
         {/* Messages Scroll Area */}
-        <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-5">
+        <div
+          ref={messagesContainerRef}
+          className="flex-1 overflow-y-auto overscroll-contain p-4 md:p-6 space-y-5"
+        >
           {messages.map((msg) => (
             <div
               key={msg.id}
@@ -557,7 +695,6 @@ export const AIChatPage: React.FC = () => {
             </div>
           )}
 
-          <div ref={chatBottomRef} />
         </div>
 
         {/* Input Bar */}

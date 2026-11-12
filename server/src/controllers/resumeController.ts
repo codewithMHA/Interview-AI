@@ -1,9 +1,9 @@
 import { Response, NextFunction } from 'express';
 import mongoose from 'mongoose';
-import { GoogleGenAI } from '@google/genai';
 import { AuthenticatedRequest } from '../types/index.js';
 import { ResumeScan } from '../models/ResumeScan.js';
 import { devStore } from '../services/devStore.js';
+import { AIService } from '../services/aiService.js';
 
 // Deterministic Role Skills Map
 const ROLE_SKILLS_MAP: Record<string, string[]> = {
@@ -443,17 +443,8 @@ export const scanResume = async (
     let analysis: any = null;
 
     // Attempt Gemini Multimodal AI Analysis if API key is present
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (apiKey && apiKey !== 'your_gemini_api_key') {
-      try {
-        const ai = new GoogleGenAI({ apiKey });
-        const candidateModels = [
-          'gemini-3.5-flash-lite',
-          'gemini-2.5-flash',
-          'gemini-3.8-flash',
-        ];
-
-        const prompt = `You are a Senior Technical Recruiter and ATS Expert for ${targetCompany} hiring for ${targetRole} positions.
+    try {
+      const prompt = `You are a Senior Technical Recruiter and ATS Expert for ${targetCompany} hiring for ${targetRole} positions.
 Analyze the candidate's resume ${hasFile ? '(attached document/image and text)' : 'text'}:
 
 --- RESUME TEXT ---
@@ -501,80 +492,42 @@ Return a strictly valid JSON response adhering to this exact schema (no markdown
   "summaryFeedback": "<2-3 sentence executive recruiter verdict>"
 }`;
 
-        const contents: any[] = [];
-        if (hasFile) {
-          const cleanBase64 = fileData.includes(';base64,')
-            ? fileData.split(';base64,')[1]
-            : fileData;
-          contents.push({
-            inlineData: {
-              data: cleanBase64,
-              mimeType:
-                fileType ||
-                (fileName?.toLowerCase().endsWith('.pdf')
-                  ? 'application/pdf'
-                  : 'image/png'),
-            },
-          });
-        }
-        contents.push(prompt);
-
-        for (const model of candidateModels) {
-          let timerId: NodeJS.Timeout | undefined;
-          try {
-            const timeoutPromise = new Promise<null>((_, reject) => {
-              timerId = setTimeout(() => reject(new Error('AI_TIMEOUT_EXCEEDED')), 8000);
-            });
-            const generatePromise = ai.models.generateContent({
-              model,
-              contents,
-              config: {
-                temperature: 0.2,
-                responseMimeType: 'application/json',
-              },
-            });
-
-            const result = (await Promise.race([generatePromise, timeoutPromise])) as any;
-            if (timerId) clearTimeout(timerId);
-
-            if (result && result.text) {
-              const cleaned = result.text
-                .replace(/```json/g, '')
-                .replace(/```/g, '')
-                .trim();
-              analysis = JSON.parse(cleaned);
-              break;
-            }
-          } catch (modelErr: any) {
-            if (timerId) clearTimeout(timerId);
-            const isNetworkOrAuthFailure =
-              modelErr.message?.includes('fetch failed') ||
-              modelErr.message?.includes('ENOTFOUND') ||
-              modelErr.message?.includes('ETIMEDOUT') ||
-              modelErr.message?.includes('API_KEY_INVALID') ||
-              modelErr.message?.includes('UNAUTHENTICATED') ||
-              modelErr.message?.includes('400') ||
-              modelErr.message?.includes('401') ||
-              modelErr.message?.includes('403');
-
-            if (isNetworkOrAuthFailure) {
-              console.log(`[ResumeAI] Cloud AI endpoint offline (${modelErr.message}). Using built-in ATS scanner.`);
-              break;
-            } else {
-              let shortMsg = modelErr.message || '';
-              try {
-                const parsed = JSON.parse(shortMsg);
-                if (parsed.error?.message) {
-                  shortMsg = `${parsed.error.code || ''}: ${parsed.error.message}`;
-                }
-              } catch {}
-              console.warn(`[ResumeAI] Model ${model} unavailable (${shortMsg}), trying fallback...`);
-            }
-          }
-        }
-      } catch (geminiErr) {
-        console.warn('[ResumeAI] Gemini call failed, falling back to heuristic engine.');
+      const contents: any[] = [];
+      if (hasFile) {
+        const cleanBase64 = fileData.includes(';base64,')
+          ? fileData.split(';base64,')[1]
+          : fileData;
+        contents.push({
+          inlineData: {
+            data: cleanBase64,
+            mimeType:
+              fileType ||
+              (fileName?.toLowerCase().endsWith('.pdf')
+                ? 'application/pdf'
+                : 'image/png'),
+          },
+        });
       }
+      contents.push(prompt);
+
+      const rawText = await AIService.generateMultimodalWithFallback(
+        contents,
+        14000,
+        0.2,
+        '[ResumeAI]'
+      );
+
+      if (rawText) {
+        const firstBrace = rawText.indexOf('{');
+        const lastBrace = rawText.lastIndexOf('}');
+        const cleaned =
+          firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace
+            ? rawText.substring(firstBrace, lastBrace + 1)
+            : rawText.replace(/```json/g, '').replace(/```/g, '').trim();
+        analysis = JSON.parse(cleaned);
+      }
+    } catch (geminiErr) {
+      console.warn('[ResumeAI] Gemini call failed, falling back to heuristic engine.');
     }
 
     // If Gemini was unavailable or threw an error, execute heuristic engine
@@ -666,6 +619,16 @@ export const getScanById = async (
 
     if (!scan) {
       res.status(404).json({ success: false, error: 'Resume scan not found.' });
+      return;
+    }
+
+    const requesterId = req.user?.userId;
+    const scanOwner = scan.userId ? scan.userId.toString() : '';
+    if (!requesterId || (scanOwner !== requesterId && req.user?.role !== 'admin')) {
+      res.status(403).json({
+        success: false,
+        error: 'Unauthorized: you do not have access to this resume scan.',
+      });
       return;
     }
 

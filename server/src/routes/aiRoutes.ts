@@ -10,8 +10,11 @@ import {
   createConversation,
   deleteConversation,
 } from '../controllers/aiController.js';
+import { optionalAuth } from '../middleware/authMiddleware.js';
 
 const router = Router();
+
+router.use(optionalAuth);
 
 router.post('/analyze-code', analyzeCode);
 router.post('/explain-code', explainCode);

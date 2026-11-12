@@ -1,6 +1,13 @@
 import vm from 'vm';
 import { spawn } from 'child_process';
-import { PROBLEM_SOLUTIONS } from '../data/problemSolutions.js';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import {
+  buildCppChallengeDriver,
+  buildJavaChallengeDriver,
+  normalizeJavaPlaygroundSource,
+} from './judge0Drivers.js';
 
 export interface CodeExecutionRequest {
   language: 'javascript' | 'python' | 'java' | 'cpp';
@@ -50,36 +57,58 @@ const JUDGE0_LANGUAGE_IDS: Record<string, number> = {
 };
 
 export class Judge0Service {
-  private static apiUrl = process.env.JUDGE0_API_URL || 'https://judge0-ce.p.rapidapi.com';
-  private static apiKey = process.env.JUDGE0_API_KEY || '';
-  private static apiHost = process.env.JUDGE0_API_HOST || 'judge0-ce.p.rapidapi.com';
+  private static rapidApiBlockedUntil: number = 0;
+  private static publicJudge0BlockedUntil: number = 0;
+  private static localCppBinaryBlockedUntil: number = 0;
+
+  private static getApiUrl(): string {
+    return (process.env.JUDGE0_API_URL || 'https://judge0-ce.p.rapidapi.com').replace(/\/+$/, '');
+  }
+
+  private static getApiKey(): string {
+    return (process.env.JUDGE0_API_KEY || '').trim();
+  }
+
+  private static getApiHost(): string {
+    return (process.env.JUDGE0_API_HOST || 'judge0-ce.p.rapidapi.com').trim();
+  }
+
+  private static isLocalCppBinaryBlocked(): boolean {
+    return Date.now() < this.localCppBinaryBlockedUntil;
+  }
 
   /**
    * Main entry point: executes code against test cases.
-   * Executes via the comprehensive local sandbox evaluator:
-   * Provides isolated V8 VM execution for JavaScript, native Python 3 execution,
-   * LeetCode test harnesses, data structure adapters (ListNode, TreeNode, MinStack),
-   * and instant custom input parsing and evaluation in < 5ms.
+   * JavaScript & Python run locally in sub-100ms; C++ & Java wrap LeetCode class
+   * snippets in a generated test driver and execute via fast local/remote Judge0.
    */
   public static async executeCode(
     request: CodeExecutionRequest
   ): Promise<CodeExecutionResponse> {
+    if (request.language === 'java' || request.language === 'cpp') {
+      return await this.executeCompiledLanguageChallenge(request);
+    }
     return await this.executeViaSandbox(request);
   }
 
   /**
-   * Helper to execute Python code natively via local Python runtime.
+   * Shared subprocess runner with stdin piping, timeout, and output size capping.
    */
-  private static runNativePython(
-    code: string,
-    stdin: string
-  ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  private static runProcess(
+    command: string,
+    args: string[],
+    stdin: string = '',
+    timeoutMs: number = 8000,
+    cwd?: string
+  ): Promise<{ exitCode: number | null; stdout: string; stderr: string; notFound?: boolean }> {
     return new Promise((resolve) => {
       let resolved = false;
+      const MAX_OUTPUT = 65536;
       try {
-        const py = spawn('python', ['-u', '-c', code], {
-          timeout: 8000,
+        const proc = spawn(command, args, {
+          timeout: timeoutMs,
           windowsHide: true,
+          cwd,
         });
 
         let stdout = '';
@@ -87,38 +116,45 @@ export class Judge0Service {
 
         if (stdin) {
           try {
-            py.stdin.write(stdin);
+            proc.stdin.write(stdin);
           } catch {}
         }
         try {
-          py.stdin.end();
+          proc.stdin.end();
         } catch {}
 
-        py.stdout.on('data', (d) => {
-          stdout += d.toString();
+        proc.stdout.on('data', (d) => {
+          if (stdout.length < MAX_OUTPUT) {
+            stdout += d.toString().slice(0, MAX_OUTPUT - stdout.length);
+          }
         });
-        py.stderr.on('data', (d) => {
-          stderr += d.toString();
+        proc.stderr.on('data', (d) => {
+          if (stderr.length < MAX_OUTPUT) {
+            stderr += d.toString().slice(0, MAX_OUTPUT - stderr.length);
+          }
         });
 
-        py.on('error', (err) => {
+        proc.on('error', (err: NodeJS.ErrnoException) => {
           if (!resolved) {
             resolved = true;
             resolve({
               exitCode: 1,
-              stdout,
-              stderr: `Failed to spawn Python process: ${err.message}`,
+              stdout: stdout.trim(),
+              stderr: err.message,
+              notFound: err.code === 'ENOENT' || err.code === 'UNKNOWN' || err.errno === -4094,
             });
           }
         });
 
-        py.on('close', (code) => {
+        proc.on('close', (exitCode) => {
           if (!resolved) {
             resolved = true;
+            const binaryFailed = exitCode === null && !stdout.trim() && !stderr.trim();
             resolve({
-              exitCode: code ?? 0,
+              exitCode: exitCode ?? 1,
               stdout: stdout.trim(),
               stderr: stderr.trim(),
+              ...(binaryFailed ? { notFound: true } : {}),
             });
           }
         });
@@ -127,9 +163,91 @@ export class Judge0Service {
           exitCode: 1,
           stdout: '',
           stderr: `Process error: ${err.message}`,
+          notFound: err.code === 'ENOENT' || err.code === 'UNKNOWN' || err.errno === -4094,
         });
       }
     });
+  }
+
+  /**
+   * Helper to execute Python code natively via local Python runtime.
+   */
+  private static runNativePython(
+    code: string,
+    stdin: string
+  ): Promise<{ exitCode: number | null; stdout: string; stderr: string }> {
+    return this.runProcess('python', ['-u', '-c', code], stdin, 8000);
+  }
+
+  /**
+   * Prepares a temp directory and compiles C++ source via local g++ (-std=c++17).
+   * When syntaxOnly is true, LeetCode helper headers/types are prepended so class Solution
+   * snippets can be syntax-checked cleanly before reporting honest execution guidance.
+   */
+  private static async prepareCppCompilation(
+    code: string,
+    syntaxOnly: boolean = false
+  ): Promise<{
+    available: boolean;
+    tmpDir?: string;
+    binaryPath?: string;
+    compileError?: string;
+  }> {
+    const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'interviewai-cpp-'));
+    const srcPath = path.join(tmpDir, 'main.cpp');
+    const binaryPath = path.join(tmpDir, process.platform === 'win32' ? 'main.exe' : 'main');
+
+    let sourceToCompile = code;
+    if (syntaxOnly) {
+      const preamble: string[] = [];
+      if (!code.includes('#include')) {
+        preamble.push(
+          '#include <iostream>',
+          '#include <vector>',
+          '#include <string>',
+          '#include <unordered_map>',
+          '#include <unordered_set>',
+          '#include <map>',
+          '#include <set>',
+          '#include <stack>',
+          '#include <queue>',
+          '#include <algorithm>',
+          '#include <climits>',
+          '#include <cmath>',
+          'using namespace std;'
+        );
+      }
+      if (code.includes('ListNode') && !/struct\s+ListNode/.test(code)) {
+        preamble.push('struct ListNode { int val; ListNode *next; ListNode(int x = 0) : val(x), next(nullptr) {} };');
+      }
+      if (code.includes('TreeNode') && !/struct\s+TreeNode/.test(code)) {
+        preamble.push('struct TreeNode { int val; TreeNode *left; TreeNode *right; TreeNode(int x = 0) : val(x), left(nullptr), right(nullptr) {} };');
+      }
+      if (preamble.length > 0) {
+        sourceToCompile = `${preamble.join('\n')}\n${code}`;
+      }
+    }
+
+    await fs.promises.writeFile(srcPath, sourceToCompile, 'utf8');
+    const args = syntaxOnly
+      ? ['-std=c++17', '-fsyntax-only', srcPath]
+      : ['-std=c++17', srcPath, '-o', binaryPath];
+
+    const compileRes = await this.runProcess('g++', args, '', 12000, tmpDir);
+    if (compileRes.notFound) {
+      await fs.promises.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+      return { available: false };
+    }
+
+    if (compileRes.exitCode !== 0) {
+      await fs.promises.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+      return {
+        available: true,
+        compileError: compileRes.stderr || 'C++ compilation failed.',
+      };
+    }
+
+    return { available: true, tmpDir, binaryPath };
   }
 
   /**
@@ -140,15 +258,26 @@ export class Judge0Service {
     rawInput: string,
     problemSlug?: string
   ): Promise<{ output: string }> {
-    const escapedInput = rawInput.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    const encodedInput = Buffer.from(rawInput || '', 'utf8').toString('base64');
     const runnerScript = `
-import sys, json, re
+import sys, json, re, base64, math, heapq, collections, bisect, itertools, functools
+from typing import List, Optional, Dict, Set, Tuple, Any
+from collections import deque, defaultdict, Counter
+
+class ListNode:
+    def __init__(self, val=0, next=None):
+        self.val = val
+        self.next = next
+
+class TreeNode:
+    def __init__(self, val=0, left=None, right=None):
+        self.val = val
+        self.left = left
+        self.right = right
 
 ${userCode}
 
-raw_input = """${escapedInput}"""
-
-def parse_input_args(raw):
+def __j0_parse_input_args(raw):
     if not raw or not raw.strip():
         return []
     trimmed = raw.strip()
@@ -217,14 +346,7 @@ def parse_input_args(raw):
                 res.append(clean)
     return res
 
-args = parse_input_args(raw_input)
-
-class ListNode:
-    def __init__(self, val=0, next=None):
-        self.val = val
-        self.next = next
-
-def arrayToList(arr):
+def __j0_array_to_list(arr):
     if not isinstance(arr, list) or len(arr) == 0:
         return None
     head = ListNode(arr[0])
@@ -234,7 +356,7 @@ def arrayToList(arr):
         curr = curr.next
     return head
 
-def listToArray(head):
+def __j0_list_to_array(head):
     res = []
     curr = head
     visited = set()
@@ -244,36 +366,123 @@ def listToArray(head):
         curr = curr.next
     return res
 
-slug = "${problemSlug || ''}"
-if slug in ['reverse-linked-list', 'merge-two-sorted-lists']:
-    if len(args) > 0 and isinstance(args[0], list):
-        args[0] = arrayToList(args[0])
-    if len(args) > 1 and isinstance(args[1], list):
-        args[1] = arrayToList(args[1])
+def __j0_array_to_tree(arr):
+    if not isinstance(arr, list) or len(arr) == 0 or arr[0] is None:
+        return None
+    root = TreeNode(arr[0])
+    q = deque([root])
+    i = 1
+    while q and i < len(arr):
+        node = q.popleft()
+        if i < len(arr):
+            if arr[i] is not None:
+                node.left = TreeNode(arr[i])
+                q.append(node.left)
+            i += 1
+        if i < len(arr):
+            if arr[i] is not None:
+                node.right = TreeNode(arr[i])
+                q.append(node.right)
+            i += 1
+    return root
 
-res = None
+def __j0_tree_to_array(root):
+    if root is None:
+        return []
+    res = []
+    q = deque([root])
+    while q and len(res) < 4000:
+        node = q.popleft()
+        if node is not None:
+            res.append(node.val)
+            q.append(node.left)
+            q.append(node.right)
+        else:
+            res.append(None)
+    while res and res[-1] is None:
+        res.pop()
+    return res
+
+__raw_input = base64.b64decode("${encodedInput}").decode("utf-8")
+__args = __j0_parse_input_args(__raw_input)
+__slug = "${problemSlug || ''}"
+
+if __slug == 'min-stack' or 'MinStack' in globals():
+    ops = __args[0] if len(__args) > 0 else []
+    vals = __args[1] if len(__args) > 1 else []
+    inst = None
+    out = []
+    for i, op in enumerate(ops):
+        arg = vals[i] if i < len(vals) else []
+        if op == 'MinStack':
+            inst = MinStack()
+            out.append(None)
+        elif inst is not None and hasattr(inst, op):
+            val_ret = getattr(inst, op)(*arg) if arg else getattr(inst, op)()
+            out.append(val_ret)
+        else:
+            out.append(None)
+    print(json.dumps(out))
+    sys.exit(0)
+
+if __slug in ['reverse-linked-list', 'merge-two-sorted-lists']:
+    if len(__args) > 0 and isinstance(__args[0], list):
+        __args[0] = __j0_array_to_list(__args[0])
+    if len(__args) > 1 and isinstance(__args[1], list):
+        __args[1] = __j0_array_to_list(__args[1])
+elif __slug == 'linked-list-cycle':
+    arr = __args[0] if len(__args) > 0 and isinstance(__args[0], list) else []
+    pos = __args[1] if len(__args) > 1 and isinstance(__args[1], int) else -1
+    head = __j0_array_to_list(arr)
+    if head and pos >= 0:
+        cycle_node = None
+        tail = head
+        idx = 0
+        while tail:
+            if idx == pos:
+                cycle_node = tail
+            if tail.next is None:
+                break
+            tail = tail.next
+            idx += 1
+        if cycle_node and tail:
+            tail.next = cycle_node
+    __args = [head]
+elif __slug in ['invert-binary-tree', 'maximum-depth-of-binary-tree', 'binary-tree-level-order-traversal', 'validate-binary-search-tree']:
+    if len(__args) > 0 and isinstance(__args[0], list):
+        __args[0] = __j0_array_to_tree(__args[0])
+
+__res = None
 if 'Solution' in globals():
     sol = Solution()
     methods = [m for m in dir(sol) if not m.startswith('_') and callable(getattr(sol, m))]
     if methods:
         fn = getattr(sol, methods[0])
-        res = fn(*args)
+        __res = fn(*__args)
     else:
         raise Exception("Method in Solution class not found")
 else:
-    fns = [v for k, v in list(globals().items()) if callable(v) and not k.startswith('_') and k not in ['arrayToList', 'listToArray', 'ListNode']]
+    __excluded = {'ListNode', 'TreeNode', 'List', 'Optional', 'Dict', 'Set', 'Tuple', 'Any', 'deque', 'defaultdict', 'Counter', '__j0_parse_input_args', '__j0_array_to_list', '__j0_list_to_array', '__j0_array_to_tree', '__j0_tree_to_array'}
+    fns = [v for k, v in list(globals().items()) if callable(v) and not k.startswith('_') and k not in __excluded and getattr(v, '__module__', '') == '__main__']
     if fns:
-        res = fns[-1](*args)
+        __res = fns[-1](*__args)
     else:
         raise Exception("Solution function not found")
 
-if slug in ['reverse-linked-list', 'merge-two-sorted-lists']:
-    if isinstance(res, ListNode):
-        res = listToArray(res)
-    elif res is None:
-        res = []
+if __slug in ['reverse-linked-list', 'merge-two-sorted-lists']:
+    if isinstance(__res, ListNode):
+        __res = __j0_list_to_array(__res)
+    elif __res is None:
+        __res = []
+elif __slug == 'invert-binary-tree':
+    if isinstance(__res, TreeNode):
+        __res = __j0_tree_to_array(__res)
+    elif __res is None:
+        __res = []
+elif __slug == 'sort-colors' and __res is None and len(__args) > 0:
+    __res = __args[0]
 
-print(json.dumps(res))
+print(json.dumps(__res))
 `;
 
     const pyResult = await this.runNativePython(runnerScript, '');
@@ -414,74 +623,87 @@ print(json.dumps(res))
         };
       }
 
-      // Intelligent execution simulation for Java / C++
-      const elapsed = Math.max(5, Math.round(performance.now() - startTime + 8));
-      let simulatedOutput = '';
-
-      if (language === 'cpp') {
-        const lines: string[] = [];
-        const coutMatches = code.matchAll(/cout\s*<<\s*([^;]+);/g);
-        for (const match of coutMatches) {
-          const expr = match[1];
-          const parts = expr.split('<<').map((p) => p.trim());
-          let lineStr = '';
-          for (const part of parts) {
-            if (part === 'endl' || part === '"\\n"') {
-              // newline token
-            } else if (part.startsWith('"') && part.endsWith('"')) {
-              lineStr += part.slice(1, -1);
-            } else if (part.includes('.size()') || part.includes('.length()')) {
-              const varName = part.split('.')[0].trim();
-              const vecMatch = code.match(new RegExp(`${varName}\\s*=\\s*\\{([^\\}]+)\\}`));
-              if (vecMatch) {
-                const count = vecMatch[1].split(',').filter((x) => x.trim().length > 0).length;
-                lineStr += count;
-              } else {
-                lineStr += '4';
-              }
-            } else if (/^\d+$/.test(part)) {
-              lineStr += part;
+      if (language === 'cpp' && !this.isLocalCppBinaryBlocked()) {
+        const cppCompile = await this.prepareCppCompilation(code, false);
+        if (cppCompile.available) {
+          if (cppCompile.compileError) {
+            const elapsed = Math.max(1, Math.round(performance.now() - startTime));
+            return {
+              stdout: '',
+              stderr: `Compilation Error:\n${cppCompile.compileError}`,
+              executionTime: elapsed,
+              status: 'Runtime Error',
+            };
+          }
+          try {
+            const runRes = await this.runProcess(
+              cppCompile.binaryPath!,
+              [],
+              rawStdin,
+              12000,
+              cppCompile.tmpDir
+            );
+            const elapsed = Math.max(1, Math.round(performance.now() - startTime));
+            if (runRes.notFound) {
+              this.localCppBinaryBlockedUntil = Date.now() + 300000;
             } else {
-              lineStr += part;
+              if (runRes.exitCode !== 0) {
+                return {
+                  stdout: runRes.stdout,
+                  stderr: runRes.stderr || `Exited with non-zero code ${runRes.exitCode}`,
+                  executionTime: elapsed,
+                  status: 'Runtime Error',
+                };
+              }
+              return {
+                stdout: runRes.stdout || 'Code executed successfully (no console output).',
+                stderr: runRes.stderr || undefined,
+                executionTime: elapsed,
+                status: 'Success',
+              };
+            }
+          } finally {
+            if (cppCompile.tmpDir) {
+              await fs.promises.rm(cppCompile.tmpDir, { recursive: true, force: true }).catch(() => {});
             }
           }
-          if (lineStr) lines.push(lineStr);
         }
+      }
 
-        if (lines.length > 0) {
-          simulatedOutput = lines.join('\n');
-        } else {
-          simulatedOutput = `Executing C++ Algorithm Sandbox...\nTarget array size: 4`;
-        }
-      } else if (language === 'java') {
-        const lines: string[] = [];
-        const printMatches = code.matchAll(/System\.out\.println\s*\(([^;]+)\);/g);
-        for (const match of printMatches) {
-          let expr = match[1].trim();
-          if (expr.includes('.length')) {
-            const arrMatch = code.match(/int\[\]\s+\w+\s*=\s*\{([^}]+)\}/);
-            const count = arrMatch ? arrMatch[1].split(',').filter((x) => x.trim().length > 0).length : 4;
-            expr = expr.replace(/\w+\.length/g, String(count));
+      if (language === 'java' || language === 'cpp') {
+        try {
+          const langId = JUDGE0_LANGUAGE_IDS[language];
+          const source = language === 'java' ? normalizeJavaPlaygroundSource(code) : code;
+          const j0 = await this.submitSingleToJudge0(langId, source, rawStdin);
+          const elapsed = Math.max(1, Math.round(performance.now() - startTime));
+
+          if (j0.statusId === 3) {
+            return {
+              stdout: j0.stdout || 'Code executed successfully (no console output).',
+              stderr: j0.stderr || undefined,
+              executionTime: j0.execTimeMs || elapsed,
+              status: 'Success',
+            };
           }
-          const parts = expr.split('+').map((p) => p.trim().replace(/^"|"$/g, ''));
-          lines.push(parts.join(''));
-        }
 
-        if (lines.length > 0) {
-          simulatedOutput = lines.join('\n');
-        } else {
-          simulatedOutput = `Executing Java Algorithm Sandbox...\nTarget array length: 4`;
+          return {
+            stdout: j0.stdout,
+            stderr: j0.compileOutput || j0.stderr || j0.statusDesc || 'Execution error',
+            executionTime: j0.execTimeMs || elapsed,
+            status: 'Runtime Error',
+          };
+        } catch {
+          // Remote Judge0 unreachable (offline or timeout) — return honest unavailability message below
         }
       }
 
-      if (rawStdin && !simulatedOutput.includes(rawStdin)) {
-        simulatedOutput += `\n[Input Received]: ${rawStdin}`;
-      }
-
+      const elapsed = Math.max(1, Math.round(performance.now() - startTime));
+      const langLabel = language === 'java' ? 'Java (javac)' : language.toUpperCase();
       return {
-        stdout: simulatedOutput,
+        stdout: '',
+        stderr: `Remote Judge0 service is unreachable and local ${langLabel} runtime is not available on this host. Please run in JavaScript or Python locally, or check internet connectivity for remote ${langLabel} execution.`,
         executionTime: elapsed,
-        status: 'Success',
+        status: 'Runtime Error',
       };
     } catch (err: any) {
       const elapsed = Math.max(1, Math.round(performance.now() - startTime));
@@ -642,64 +864,125 @@ print(json.dumps(res))
             });
           }
         } else {
-          // For Java, C++
-          const elapsed = Math.max(2, Math.round(performance.now() - startTime + 5));
-          totalTime += elapsed;
+          // Non-JS/Python languages (C++ / Java): real native compiler check or honest unavailability error
+          if (language === 'cpp' && /\bint\s+main\s*\(/.test(code)) {
+            const cppCompile = await this.prepareCppCompilation(code, false);
+            if (!cppCompile.available) {
+              const elapsed = Math.max(1, Math.round(performance.now() - startTime));
+              totalTime += elapsed;
+              overallStatus = 'Compilation Error';
+              testResults.push({
+                testCaseIndex: i + 1,
+                status: 'Error',
+                input: tc.input,
+                expectedOutput: tc.expectedOutput,
+                executionTime: elapsed,
+                memory: 0,
+                error: 'Local g++ compiler not available and JUDGE0_API_KEY is not configured.',
+                isHidden: !!tc.isHidden,
+              });
+              continue;
+            }
+            if (cppCompile.compileError) {
+              const elapsed = Math.max(1, Math.round(performance.now() - startTime));
+              totalTime += elapsed;
+              overallStatus = 'Compilation Error';
+              testResults.push({
+                testCaseIndex: i + 1,
+                status: 'Error',
+                input: tc.input,
+                expectedOutput: tc.expectedOutput,
+                executionTime: elapsed,
+                memory: 0,
+                error: cppCompile.compileError,
+                isHidden: !!tc.isHidden,
+              });
+              continue;
+            }
 
-          if (isCustomCase) {
-            let computedOutput = 'Executed successfully';
             try {
-              const solData = PROBLEM_SOLUTIONS[request.problemSlug || ''];
-              if (solData?.solutions?.javascript) {
-                const refRun = this.runJsInVm(solData.solutions.javascript, tc.input, request.problemSlug);
-                if (refRun.output && refRun.output !== '__UNDEFINED_RETURN__') {
-                  computedOutput = refRun.output;
-                }
-              }
-            } catch {}
+              const runRes = await this.runProcess(
+                cppCompile.binaryPath!,
+                [],
+                tc.input,
+                8000,
+                cppCompile.tmpDir
+              );
+              const elapsed = Math.max(1, Math.round(performance.now() - startTime));
+              totalTime += elapsed;
 
-            passedCount++;
-            testResults.push({
-              testCaseIndex: i + 1,
-              status: 'Passed',
-              input: tc.input,
-              expectedOutput: '(Custom Input)',
-              actualOutput: computedOutput,
-              executionTime: elapsed,
-              memory: 16000,
-              isHidden: false,
-            });
+              if (runRes.exitCode !== 0) {
+                overallStatus = 'Runtime Error';
+                testResults.push({
+                  testCaseIndex: i + 1,
+                  status: 'Error',
+                  input: tc.input,
+                  expectedOutput: tc.expectedOutput,
+                  actualOutput: runRes.stdout,
+                  executionTime: elapsed,
+                  memory: 14000,
+                  error: runRes.stderr || `Exited with status ${runRes.exitCode}`,
+                  isHidden: !!tc.isHidden,
+                });
+              } else if (isCustomCase || this.compareOutputs(runRes.stdout, tc.expectedOutput, request.problemSlug)) {
+                passedCount++;
+                testResults.push({
+                  testCaseIndex: i + 1,
+                  status: 'Passed',
+                  input: tc.input,
+                  expectedOutput: isCustomCase ? '(Custom Input)' : tc.expectedOutput,
+                  actualOutput: runRes.stdout,
+                  executionTime: elapsed,
+                  memory: 14000,
+                  isHidden: !!tc.isHidden,
+                });
+              } else {
+                overallStatus = 'Wrong Answer';
+                testResults.push({
+                  testCaseIndex: i + 1,
+                  status: 'Failed',
+                  input: tc.input,
+                  expectedOutput: tc.expectedOutput,
+                  actualOutput: runRes.stdout,
+                  executionTime: elapsed,
+                  memory: 14000,
+                  isHidden: !!tc.isHidden,
+                });
+              }
+            } finally {
+              if (cppCompile.tmpDir) {
+                await fs.promises.rm(cppCompile.tmpDir, { recursive: true, force: true }).catch(() => {});
+              }
+            }
             continue;
           }
 
-          const simResult = this.simulateNonJsExecution(language, code, tc.input, tc.expectedOutput);
-
-          if (simResult.status === 'Passed') {
-            passedCount++;
-            testResults.push({
-              testCaseIndex: i + 1,
-              status: 'Passed',
-              input: tc.input,
-              expectedOutput: tc.expectedOutput,
-              actualOutput: tc.expectedOutput,
-              executionTime: elapsed,
-              memory: Math.round(12000 + Math.random() * 3000),
-              isHidden: !!tc.isHidden,
-            });
-          } else {
-            overallStatus = simResult.status === 'Error' ? 'Runtime Error' : 'Wrong Answer';
-            testResults.push({
-              testCaseIndex: i + 1,
-              status: simResult.status,
-              input: tc.input,
-              expectedOutput: tc.expectedOutput,
-              actualOutput: simResult.actualOutput || 'Empty or mismatch',
-              executionTime: elapsed,
-              memory: Math.round(12000 + Math.random() * 3000),
-              error: simResult.error,
-              isHidden: !!tc.isHidden,
-            });
+          let compileDiagnostic: string | undefined;
+          if (language === 'cpp') {
+            const syntaxCheck = await this.prepareCppCompilation(code, true);
+            if (syntaxCheck.compileError) {
+              compileDiagnostic = syntaxCheck.compileError;
+            }
+            if (syntaxCheck.tmpDir) {
+              await fs.promises.rm(syntaxCheck.tmpDir, { recursive: true, force: true }).catch(() => {});
+            }
           }
+
+          const simResult = this.evaluateNonLocalLanguageFallback(language, code, compileDiagnostic);
+          const elapsed = Math.max(1, Math.round(performance.now() - startTime));
+          totalTime += elapsed;
+          overallStatus = 'Compilation Error';
+          testResults.push({
+            testCaseIndex: i + 1,
+            status: simResult.status,
+            input: tc.input,
+            expectedOutput: isCustomCase ? '(Custom Input)' : tc.expectedOutput,
+            actualOutput: simResult.actualOutput || 'Not executed',
+            executionTime: elapsed,
+            memory: 0,
+            error: simResult.error,
+            isHidden: !!tc.isHidden,
+          });
         }
       } catch (err: any) {
         const elapsed = Math.max(1, Math.round(performance.now() - startTime));
@@ -1005,6 +1288,9 @@ print(json.dumps(res))
           const rawResult = fn(...parsedArgs);
 
           if (rawResult === undefined) {
+            if (slug === 'sort-colors' && Array.isArray(parsedArgs[0])) {
+              return JSON.stringify(parsedArgs[0]);
+            }
             return "__UNDEFINED_RETURN__";
           }
 
@@ -1087,7 +1373,7 @@ print(json.dumps(res))
         }
         if (slug === 'group-anagrams') {
           const sortA = a.map((sub: any) => Array.isArray(sub) ? sub.slice().sort().join(',') : sub).sort().join(';');
-          const sortE = e.map((sub: any) => Array.isArray(sub) ? sub.slice().sort((x: any, y: any) => x - y).join(',') : sub).sort().join(';');
+          const sortE = e.map((sub: any) => Array.isArray(sub) ? sub.slice().sort().join(',') : sub).sort().join(';');
           return sortA === sortE;
         }
         if (slug === 'top-k-frequent-elements') {
@@ -1102,82 +1388,473 @@ print(json.dumps(res))
   }
 
   /**
-   * Semantic analysis & simulation for non-JS languages when Judge0 API key is absent.
+   * Honest fallback when Java or class-only C++ cannot be compiled/judged locally or remotely.
+   * Never fabricates a false "Passed" result for unexecuted code.
    */
-  private static simulateNonJsExecution(
+  private static evaluateNonLocalLanguageFallback(
     language: string,
     code: string,
-    input: string,
-    expectedOutput: string
-  ): { status: 'Passed' | 'Failed' | 'Error'; actualOutput?: string; error?: string } {
+    compileDiagnostic?: string
+  ): { status: 'Failed' | 'Error'; actualOutput?: string; error: string } {
     const trimmed = code.trim();
 
-    // Basic syntax structure verification
-    if (language === 'python') {
-      if (!trimmed.includes('def ') || trimmed.length < 30) {
-        return {
-          status: 'Error',
-          error: 'SyntaxError: Python solution function definition is missing or incomplete.',
-        };
-      }
-    } else if (language === 'java') {
-      if (!trimmed.includes('class ') || !trimmed.includes('{') || trimmed.length < 40) {
-        return {
-          status: 'Error',
-          error: 'CompileError: Java class or method declaration is incomplete.',
-        };
-      }
-    } else if (language === 'cpp') {
-      if (!trimmed.includes('class ') && !trimmed.includes('vector') && trimmed.length < 30) {
-        return {
-          status: 'Error',
-          error: 'CompileError: C++ class or method declaration is incomplete.',
-        };
-      }
+    if (compileDiagnostic) {
+      return {
+        status: 'Error',
+        actualOutput: 'Compilation Error',
+        error: compileDiagnostic,
+      };
     }
 
-    // Strip comments and whitespace
-    const codeWithoutComments = trimmed
-      .replace(/\/\/.*$/gm, '')
-      .replace(/\/\*[\s\S]*?\*\//g, '')
-      .replace(/#.*$/gm, '')
-      .trim();
-
-    // Detect if code is only an unimplemented starter template/stub
-    const hasAlgorithmicLogic =
-      codeWithoutComments.includes('for ') ||
-      codeWithoutComments.includes('for(') ||
-      codeWithoutComments.includes('while') ||
-      codeWithoutComments.includes('if ') ||
-      codeWithoutComments.includes('if(') ||
-      codeWithoutComments.includes('map') ||
-      codeWithoutComments.includes('Map') ||
-      codeWithoutComments.includes('dict') ||
-      codeWithoutComments.includes('set') ||
-      codeWithoutComments.includes('Set') ||
-      codeWithoutComments.includes('dp') ||
-      codeWithoutComments.includes('stack') ||
-      codeWithoutComments.includes('queue') ||
-      codeWithoutComments.includes('hash') ||
-      codeWithoutComments.includes('Hash') ||
-      (codeWithoutComments.includes('return ') && codeWithoutComments.length > 65);
-
-    if (!hasAlgorithmicLogic || codeWithoutComments.length < 45 || (codeWithoutComments.includes('pass') && codeWithoutComments.split('\n').length <= 5)) {
+    if (language === 'java' && (!trimmed.includes('class ') || !trimmed.includes('{') || trimmed.length < 40)) {
       return {
-        status: 'Failed',
-        actualOutput: 'None (Starter template)',
-        error: 'Starter template code detected. Implement your algorithm or click "Load Solution" in the top bar to inspect and run the verified placement code.',
+        status: 'Error',
+        actualOutput: 'CompileError',
+        error: 'CompileError: Java class or method declaration is incomplete.',
+      };
+    }
+
+    if (language === 'cpp' && !trimmed.includes('class ') && !trimmed.includes('vector') && trimmed.length < 30) {
+      return {
+        status: 'Error',
+        actualOutput: 'CompileError',
+        error: 'CompileError: C++ class or method declaration is incomplete.',
+      };
+    }
+
+    if (language === 'cpp') {
+      return {
+        status: 'Error',
+        actualOutput: 'Not executed',
+        error: 'Local C++ runtime / remote Judge0 compiler is currently not available for execution on this host. Please ensure internet connectivity or switch to JavaScript or Python for instant local verification.',
       };
     }
 
     return {
-      status: 'Passed',
-      actualOutput: expectedOutput,
+      status: 'Error',
+      actualOutput: 'Not executed',
+      error: 'Local Java compiler (javac) is not available and remote Judge0 is currently unreachable. Please check internet connectivity or switch to JavaScript or Python for instant local verification.',
+    };
+  }
+
+  private static decodeBase64(val: any): string {
+    if (!val || typeof val !== 'string') return '';
+    try {
+      return Buffer.from(val, 'base64').toString('utf8').trim();
+    } catch {
+      return val.trim();
+    }
+  }
+
+  /**
+   * Submits a single execution job to Judge0, automatically trying configured endpoint first
+   * (with a short 3.5s timeout and 3m circuit breaker on timeout/401/403/429) and falling back
+   * immediately to https://ce.judge0.com (with base64 encoding for full character fidelity).
+   */
+  private static async submitSingleToJudge0(
+    languageId: number,
+    sourceCode: string,
+    stdin: string
+  ): Promise<{
+    statusId: number;
+    statusDesc: string;
+    stdout: string;
+    stderr: string;
+    compileOutput: string;
+    execTimeMs: number;
+    memoryKb: number;
+  }> {
+    const now = Date.now();
+    const endpoints: Array<{
+      url: string;
+      isRapid: boolean;
+      timeoutMs: number;
+    }> = [];
+
+    const configuredUrl = this.getApiUrl();
+    const apiKey = this.getApiKey();
+    const isRapidEndpoint = configuredUrl.includes('rapidapi');
+    const isValidApiKey = Boolean(apiKey) && !/^(your_|placeholder|changeme|none|null)/i.test(apiKey);
+
+    if (isValidApiKey && (!isRapidEndpoint || now >= this.rapidApiBlockedUntil)) {
+      endpoints.push({ url: configuredUrl, isRapid: isRapidEndpoint, timeoutMs: 3500 });
+    }
+    if (configuredUrl !== 'https://ce.judge0.com' && now >= this.publicJudge0BlockedUntil) {
+      endpoints.push({ url: 'https://ce.judge0.com', isRapid: false, timeoutMs: 16000 });
+    }
+
+    if (endpoints.length === 0) {
+      throw new Error('Remote Judge0 endpoints are cooling down or unreachable offline.');
+    }
+
+    const encodedSource = Buffer.from(sourceCode, 'utf8').toString('base64');
+    const encodedStdin = Buffer.from(stdin || '', 'utf8').toString('base64');
+
+    let lastError: any = null;
+    for (const ep of endpoints) {
+      try {
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (ep.isRapid && apiKey) {
+          headers['X-RapidAPI-Key'] = apiKey;
+          headers['X-RapidAPI-Host'] = this.getApiHost();
+        }
+
+        const response = await fetch(
+          `${ep.url}/submissions?base64_encoded=true&wait=true`,
+          {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({
+              language_id: languageId,
+              source_code: encodedSource,
+              stdin: encodedStdin,
+            }),
+            signal: AbortSignal.timeout(ep.timeoutMs),
+          }
+        );
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          if (ep.isRapid) this.rapidApiBlockedUntil = Date.now() + 180000;
+          else if (response.status === 429 || response.status >= 500) {
+            this.publicJudge0BlockedUntil = Date.now() + 15000;
+          }
+          lastError = new Error(`Judge0 API error (${response.status}): ${errorText}`);
+          console.warn(`[Judge0Service] ${ep.url} HTTP ${response.status}: ${errorText.slice(0, 140)}`);
+          continue;
+        }
+
+        const data: any = await response.json();
+        return {
+          statusId: data.status?.id || 0,
+          statusDesc: data.status?.description || 'Unknown',
+          stdout: this.decodeBase64(data.stdout),
+          stderr: this.decodeBase64(data.stderr || data.message),
+          compileOutput: this.decodeBase64(data.compile_output),
+          execTimeMs: Math.max(1, Math.round((parseFloat(data.time) || 0.01) * 1000)),
+          memoryKb: data.memory || 10240,
+        };
+      } catch (err: any) {
+        if (ep.isRapid) {
+          this.rapidApiBlockedUntil = Date.now() + 180000;
+        } else if (err?.name !== 'TimeoutError') {
+          this.publicJudge0BlockedUntil = Date.now() + 15000;
+        }
+        console.warn(`[Judge0Service] ${ep.url} error (${err?.name || 'Err'}): ${err?.message || err}`);
+        lastError = err;
+      }
+    }
+
+    throw lastError || new Error('Remote Judge0 execution unavailable.');
+  }
+
+  /**
+   * Executes C++ & Java coding challenges:
+   * 1. For LeetCode class Solution snippets, builds a single multi-case harness binary (1 compile + run!).
+   * 2. Uses local g++ first when binary execution works on host; otherwise executes in ~1.5-2.8s via Judge0.
+   * 3. Never fabricates Accepted if compilers and remote Judge0 are unavailable.
+   */
+  private static async executeCompiledLanguageChallenge(
+    request: CodeExecutionRequest
+  ): Promise<CodeExecutionResponse> {
+    const { language, code, testCases, problemSlug } = request;
+    const langId = JUDGE0_LANGUAGE_IDS[language];
+    const startTime = performance.now();
+
+    const driver =
+      language === 'java'
+        ? buildJavaChallengeDriver(code, testCases, problemSlug)
+        : buildCppChallengeDriver(code, testCases, problemSlug);
+
+    // A. Batched LeetCode Class Harness Path (1 single compilation for all test cases!)
+    if (driver) {
+      let stdout = '';
+      let stderr = '';
+      let compileOutput = '';
+      let statusId = 3;
+      let statusDesc = 'Accepted';
+      let memoryKb = 14000;
+      let runtimeMs = 0;
+      let executed = false;
+
+      // Try fast local g++ compilation + binary run first for C++ if not blocked on this host
+      if (language === 'cpp' && !this.isLocalCppBinaryBlocked()) {
+        const cppCompile = await this.prepareCppCompilation(driver.wrappedCode, false);
+        if (cppCompile.available) {
+          if (cppCompile.compileError) {
+            return {
+              status: 'Compilation Error',
+              totalRuntime: Math.max(1, Math.round(performance.now() - startTime)),
+              peakMemory: 0,
+              testCasesPassed: 0,
+              totalTestCases: testCases.length,
+              error: cppCompile.compileError,
+              testResults: testCases.map((tc, i) => ({
+                testCaseIndex: i + 1,
+                status: 'Error',
+                input: tc.input,
+                expectedOutput: tc.expectedOutput,
+                actualOutput: 'Compilation Error',
+                executionTime: 0,
+                memory: 0,
+                error: cppCompile.compileError,
+                isHidden: !!tc.isHidden,
+              })),
+            };
+          }
+          try {
+            const runRes = await this.runProcess(cppCompile.binaryPath!, [], '', 12000, cppCompile.tmpDir);
+            if (runRes.notFound) {
+              this.localCppBinaryBlockedUntil = Date.now() + 300000;
+            } else {
+              executed = true;
+              stdout = runRes.stdout;
+              stderr = runRes.stderr;
+              runtimeMs = Math.max(1, Math.round(performance.now() - startTime));
+              if (runRes.exitCode !== 0 && !stdout.includes('__CASE_OUT__')) {
+                statusId = 11;
+                statusDesc = 'Runtime Error';
+              }
+            }
+          } finally {
+            if (cppCompile.tmpDir) {
+              await fs.promises.rm(cppCompile.tmpDir, { recursive: true, force: true }).catch(() => {});
+            }
+          }
+        }
+      }
+
+      // Remote Judge0 batched execution (used directly for Java, or C++ when local binary unavailable/blocked)
+      if (!executed) {
+        try {
+          const j0 = await this.submitSingleToJudge0(langId, driver.wrappedCode, '');
+          executed = true;
+          stdout = j0.stdout;
+          stderr = j0.stderr;
+          compileOutput = j0.compileOutput;
+          statusId = j0.statusId;
+          statusDesc = j0.statusDesc;
+          memoryKb = j0.memoryKb;
+          runtimeMs = j0.execTimeMs;
+        } catch {
+          // Offline fallback handled below
+        }
+      }
+
+      if (executed) {
+        if (statusId === 6 || (compileOutput && !stdout.includes('__CASE_OUT__'))) {
+          const errMsg = compileOutput || stderr || 'Compilation Error';
+          return {
+            status: 'Compilation Error',
+            totalRuntime: runtimeMs || 1,
+            peakMemory: memoryKb,
+            testCasesPassed: 0,
+            totalTestCases: testCases.length,
+            error: errMsg,
+            testResults: testCases.map((tc, i) => ({
+              testCaseIndex: i + 1,
+              status: 'Error',
+              input: tc.input,
+              expectedOutput: tc.expectedOutput,
+              actualOutput: 'Compilation Error',
+              executionTime: runtimeMs,
+              memory: memoryKb,
+              error: errMsg,
+              isHidden: !!tc.isHidden,
+            })),
+          };
+        }
+
+        if (statusId === 5) {
+          return {
+            status: 'Time Limit Exceeded',
+            totalRuntime: runtimeMs || 2000,
+            peakMemory: memoryKb,
+            testCasesPassed: 0,
+            totalTestCases: testCases.length,
+            error: 'Time Limit Exceeded while evaluating test cases.',
+            testResults: testCases.map((tc, i) => ({
+              testCaseIndex: i + 1,
+              status: 'Error',
+              input: tc.input,
+              expectedOutput: tc.expectedOutput,
+              executionTime: runtimeMs,
+              memory: memoryKb,
+              error: 'Time Limit Exceeded',
+              isHidden: !!tc.isHidden,
+            })),
+          };
+        }
+
+        if (statusId >= 7 && !stdout.includes('__CASE_OUT__') && !stdout.includes('__CASE_ERR__')) {
+          const errMsg = stderr || statusDesc || 'Runtime Error';
+          return {
+            status: 'Runtime Error',
+            totalRuntime: runtimeMs || 1,
+            peakMemory: memoryKb,
+            testCasesPassed: 0,
+            totalTestCases: testCases.length,
+            error: errMsg,
+            testResults: testCases.map((tc, i) => ({
+              testCaseIndex: i + 1,
+              status: 'Error',
+              input: tc.input,
+              expectedOutput: tc.expectedOutput,
+              executionTime: runtimeMs,
+              memory: memoryKb,
+              error: errMsg,
+              isHidden: !!tc.isHidden,
+            })),
+          };
+        }
+
+        const outMap = new Map<number, string>();
+        const errMap = new Map<number, string>();
+        for (const line of stdout.split(/\r?\n/)) {
+          const outMatch = line.match(/^__CASE_OUT__(\d+)__:(.*)$/);
+          if (outMatch) {
+            outMap.set(Number(outMatch[1]), outMatch[2].trim());
+            continue;
+          }
+          const errMatch = line.match(/^__CASE_ERR__(\d+)__:(.*)$/);
+          if (errMatch) {
+            errMap.set(Number(errMatch[1]), errMatch[2].trim());
+          }
+        }
+
+        const testResults: TestCaseResult[] = [];
+        let passedCount = 0;
+        let hasRuntimeErr = false;
+        const perCaseTime = Math.max(1, Math.round((runtimeMs || 1) / Math.max(1, testCases.length)));
+
+        for (let i = 0; i < testCases.length; i++) {
+          const tc = testCases[i];
+          const isCustomCase = !tc.expectedOutput || tc.expectedOutput.trim() === '' || tc.expectedOutput === '(Custom Input)';
+          const caseErr = errMap.get(i);
+          if (caseErr) {
+            hasRuntimeErr = true;
+            testResults.push({
+              testCaseIndex: i + 1,
+              status: 'Error',
+              input: tc.input,
+              expectedOutput: isCustomCase ? '(Custom Input)' : tc.expectedOutput,
+              actualOutput: 'Runtime Error',
+              executionTime: perCaseTime,
+              memory: memoryKb,
+              error: caseErr,
+              isHidden: !!tc.isHidden,
+            });
+            continue;
+          }
+
+          if (!outMap.has(i)) {
+            hasRuntimeErr = true;
+            testResults.push({
+              testCaseIndex: i + 1,
+              status: 'Error',
+              input: tc.input,
+              expectedOutput: isCustomCase ? '(Custom Input)' : tc.expectedOutput,
+              actualOutput: 'No output',
+              executionTime: perCaseTime,
+              memory: memoryKb,
+              error: stderr || 'Test case terminated unexpectedly before producing output.',
+              isHidden: !!tc.isHidden,
+            });
+            continue;
+          }
+
+          const actual = outMap.get(i)!;
+          if (isCustomCase || this.compareOutputs(actual, tc.expectedOutput, problemSlug)) {
+            passedCount++;
+            testResults.push({
+              testCaseIndex: i + 1,
+              status: 'Passed',
+              input: tc.input,
+              expectedOutput: isCustomCase ? '(Custom Input)' : tc.expectedOutput,
+              actualOutput: actual,
+              executionTime: perCaseTime,
+              memory: memoryKb,
+              isHidden: !!tc.isHidden,
+            });
+          } else {
+            testResults.push({
+              testCaseIndex: i + 1,
+              status: 'Failed',
+              input: tc.input,
+              expectedOutput: tc.expectedOutput,
+              actualOutput: actual,
+              executionTime: perCaseTime,
+              memory: memoryKb,
+              isHidden: !!tc.isHidden,
+            });
+          }
+        }
+
+        const overallStatus: CodeExecutionResponse['status'] =
+          passedCount === testCases.length
+            ? 'Accepted'
+            : hasRuntimeErr
+            ? 'Runtime Error'
+            : 'Wrong Answer';
+
+        return {
+          status: overallStatus,
+          totalRuntime: runtimeMs || 1,
+          peakMemory: memoryKb,
+          testCasesPassed: passedCount,
+          totalTestCases: testCases.length,
+          testResults,
+        };
+      }
+    } else if (/\bmain\s*\(/.test(code)) {
+      // B. User provided standalone main() in Coding Challenge -> run testCases concurrently via Judge0
+      try {
+        return await this.executeViaRemoteJudge0(request);
+      } catch {
+        // Fall through to honest sandbox / compiler unavailable below
+      }
+    }
+
+    // C. Offline / Unreachable fallback: run at most ONE syntax check for C++ (not N times!)
+    let compileDiagnostic: string | undefined;
+    if (language === 'cpp') {
+      const syntaxCheck = await this.prepareCppCompilation(code, true);
+      if (syntaxCheck.compileError) {
+        compileDiagnostic = syntaxCheck.compileError;
+      }
+      if (syntaxCheck.tmpDir) {
+        await fs.promises.rm(syntaxCheck.tmpDir, { recursive: true, force: true }).catch(() => {});
+      }
+    }
+
+    const simResult = this.evaluateNonLocalLanguageFallback(language, code, compileDiagnostic);
+    const elapsed = Math.max(1, Math.round(performance.now() - startTime));
+    return {
+      status: 'Compilation Error',
+      totalRuntime: elapsed,
+      peakMemory: 0,
+      testCasesPassed: 0,
+      totalTestCases: testCases.length,
+      error: simResult.error,
+      testResults: testCases.map((tc, i) => ({
+        testCaseIndex: i + 1,
+        status: simResult.status,
+        input: tc.input,
+        expectedOutput:
+          !tc.expectedOutput || tc.expectedOutput.trim() === '' || tc.expectedOutput === '(Custom Input)'
+            ? '(Custom Input)'
+            : tc.expectedOutput,
+        actualOutput: simResult.actualOutput || 'Not executed',
+        executionTime: i === 0 ? elapsed : 1,
+        memory: 0,
+        error: simResult.error,
+        isHidden: !!tc.isHidden,
+      })),
     };
   }
 
   /**
-   * Executes code via remote Judge0 REST API if credentials are provided.
+   * Executes standalone main() test cases concurrently via remote Judge0 REST API.
    */
   private static async executeViaRemoteJudge0(
     request: CodeExecutionRequest
@@ -1187,82 +1864,62 @@ print(json.dumps(res))
       throw new Error(`Unsupported language '${request.language}' for Judge0 execution.`);
     }
 
-    const testResults: TestCaseResult[] = [];
-    let passedCount = 0;
-    let totalTime = 0;
-    let maxMemory = 0;
-    let overallStatus: CodeExecutionResponse['status'] = 'Accepted';
+    const sourceCode =
+      request.language === 'java' ? normalizeJavaPlaygroundSource(request.code) : request.code;
 
-    for (let i = 0; i < request.testCases.length; i++) {
-      const tc = request.testCases[i];
+    const settled = await Promise.all(
+      request.testCases.map(async (tc, i) => {
+        const isCustomCase = !tc.expectedOutput || tc.expectedOutput.trim() === '' || tc.expectedOutput === '(Custom Input)';
+        const j0 = await this.submitSingleToJudge0(languageId, sourceCode, tc.input);
 
-      const response = await fetch(
-        `${this.apiUrl}/submissions?base64_encoded=false&wait=true`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-RapidAPI-Key': this.apiKey,
-            'X-RapidAPI-Host': this.apiHost,
-          },
-          body: JSON.stringify({
-            language_id: languageId,
-            source_code: request.code,
-            stdin: tc.input,
-            expected_output: tc.expectedOutput,
-          }),
+        if (j0.statusId === 3 && (isCustomCase || this.compareOutputs(j0.stdout, tc.expectedOutput, request.problemSlug))) {
+          return {
+            passed: true,
+            statusDesc: 'Accepted' as CodeExecutionResponse['status'],
+            result: {
+              testCaseIndex: i + 1,
+              status: 'Passed' as const,
+              input: tc.input,
+              expectedOutput: isCustomCase ? '(Custom Input)' : tc.expectedOutput,
+              actualOutput: j0.stdout || tc.expectedOutput,
+              executionTime: j0.execTimeMs,
+              memory: j0.memoryKb,
+              isHidden: !!tc.isHidden,
+            },
+          };
         }
-      );
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`Judge0 API error (${response.status}): ${errorText}`);
-      }
+        let mappedStatus: CodeExecutionResponse['status'] = 'Wrong Answer';
+        if (j0.statusDesc.includes('Time Limit')) mappedStatus = 'Time Limit Exceeded';
+        else if (j0.statusDesc.includes('Compilation')) mappedStatus = 'Compilation Error';
+        else if (j0.statusDesc.includes('Runtime')) mappedStatus = 'Runtime Error';
 
-      const data: any = await response.json();
-      const execTime = Math.round((parseFloat(data.time) || 0.01) * 1000);
-      const memoryKb = data.memory || 10240;
-      totalTime += execTime;
-      maxMemory = Math.max(maxMemory, memoryKb);
+        return {
+          passed: false,
+          statusDesc: mappedStatus,
+          result: {
+            testCaseIndex: i + 1,
+            status: (mappedStatus === 'Wrong Answer' ? 'Failed' : 'Error') as 'Failed' | 'Error',
+            input: tc.input,
+            expectedOutput: isCustomCase ? '(Custom Input)' : tc.expectedOutput,
+            actualOutput: j0.stdout || j0.stderr,
+            executionTime: j0.execTimeMs,
+            memory: j0.memoryKb,
+            error: j0.compileOutput || j0.stderr || (mappedStatus !== 'Wrong Answer' ? j0.statusDesc : undefined),
+            isHidden: !!tc.isHidden,
+          },
+        };
+      })
+    );
 
-      const statusId = data.status?.id;
-      // Status ID 3 = Accepted
-      if (statusId === 3) {
-        passedCount++;
-        testResults.push({
-          testCaseIndex: i + 1,
-          status: 'Passed',
-          input: tc.input,
-          expectedOutput: tc.expectedOutput,
-          actualOutput: data.stdout || tc.expectedOutput,
-          executionTime: execTime,
-          memory: memoryKb,
-          isHidden: !!tc.isHidden,
-        });
-      } else {
-        const statusDesc = data.status?.description || 'Wrong Answer';
-        if (statusDesc.includes('Time Limit')) overallStatus = 'Time Limit Exceeded';
-        else if (statusDesc.includes('Compilation')) overallStatus = 'Compilation Error';
-        else if (statusDesc.includes('Runtime')) overallStatus = 'Runtime Error';
-        else overallStatus = 'Wrong Answer';
-
-        testResults.push({
-          testCaseIndex: i + 1,
-          status: 'Failed',
-          input: tc.input,
-          expectedOutput: tc.expectedOutput,
-          actualOutput: data.stdout || data.stderr,
-          executionTime: execTime,
-          memory: memoryKb,
-          error: data.compile_output || data.stderr || statusDesc,
-          isHidden: !!tc.isHidden,
-        });
-      }
-    }
-
-    if (passedCount === request.testCases.length) {
-      overallStatus = 'Accepted';
-    }
+    const testResults = settled.map((s) => s.result);
+    const passedCount = settled.filter((s) => s.passed).length;
+    const totalTime = settled.reduce((acc, s) => acc + s.result.executionTime, 0);
+    const maxMemory = settled.reduce((acc, s) => Math.max(acc, s.result.memory), 0);
+    const overallStatus: CodeExecutionResponse['status'] =
+      passedCount === request.testCases.length
+        ? 'Accepted'
+        : settled.find((s) => !s.passed)?.statusDesc || 'Wrong Answer';
 
     return {
       status: overallStatus,

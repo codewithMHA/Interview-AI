@@ -29,3 +29,9 @@ export const env = {
   JUDGE0_API_URL: process.env.JUDGE0_API_URL || 'https://judge0-ce.p.rapidapi.com',
   JUDGE0_API_KEY: process.env.JUDGE0_API_KEY || '',
 };
+
+if (env.NODE_ENV === 'production' && env.JWT_SECRET.startsWith('dev_secret_key')) {
+  console.warn(
+    '[SECURITY WARNING] Using default JWT_SECRET in production! Set a strong random JWT_SECRET environment variable.'
+  );
+}

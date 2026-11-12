@@ -36,9 +36,9 @@ import { Badge } from '@/components/common/Badge';
 import { Button } from '@/components/common/Button';
 
 const SAMPLE_RESUMES: Record<string, string> = {
-  software_engineer: `MOHAMMED FAROOQ
-mohammed.farooq@email.com | +91 98765 43210 | Bengaluru, India
-github.com/mohammed-farooq | linkedin.com/in/mohammed-farooq
+  software_engineer: `ROHAN VERMA
+rohan.verma@example.com | +91 98000 00000 | Bengaluru, India
+github.com/rohan-verma | linkedin.com/in/rohan-verma
 
 EDUCATION
 National Institute of Technology (NIT) | B.Tech in Computer Science & Engineering

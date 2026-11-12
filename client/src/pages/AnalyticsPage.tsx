@@ -58,20 +58,11 @@ import { useAuth } from '@/context/AuthContext';
 import { useNavigate } from 'react-router-dom';
 
 export const AnalyticsPage: React.FC = () => {
-  const { isAuthenticated, login } = useAuth();
+  const { isAuthenticated } = useAuth();
   const navigate = useNavigate();
   const [data, setData] = useState<AnalyticsDashboardData | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-
-  const handleDemoLogin = async () => {
-    try {
-      await login('student@demo.com', 'password123');
-      navigate('/dashboard');
-    } catch (err) {
-      console.error(err);
-    }
-  };
 
   const loadAnalytics = async () => {
     setIsLoading(true);
@@ -124,20 +115,6 @@ export const AnalyticsPage: React.FC = () => {
       case 'Sparkles':
       default:
         return <Sparkles className="w-5 h-5" />;
-    }
-  };
-
-  const getHeatmapColor = (level: number) => {
-    switch (level) {
-      case 3:
-        return 'bg-brand-600 dark:bg-brand-500 text-white';
-      case 2:
-        return 'bg-brand-400 dark:bg-brand-600 text-white';
-      case 1:
-        return 'bg-brand-200 dark:bg-brand-900 text-brand-900 dark:text-brand-200';
-      case 0:
-      default:
-        return 'bg-slate-100 dark:bg-slate-800/80 text-slate-400 dark:text-slate-500';
     }
   };
 
@@ -234,6 +211,7 @@ export const AnalyticsPage: React.FC = () => {
     streak,
     bestStreak = data.streak,
     activityMap = {},
+    dailyActivityMap = {},
     annualHeatmap = [],
     xpPoints,
     level,
@@ -1230,8 +1208,12 @@ export const AnalyticsPage: React.FC = () => {
         currentStreak={streak}
         bestStreak={bestStreak}
         activityMap={activityMap}
+        dailyActivityMap={dailyActivityMap}
         heatmap={heatmap}
+        annualHeatmap={annualHeatmap}
         showAnnualToggle={true}
+        layout="split"
+        defaultView="annual"
       />
 
       {/* 11. Recent Placement Activities Timeline */}
@@ -1243,7 +1225,7 @@ export const AnalyticsPage: React.FC = () => {
               Recent Practice & Interview Log
             </CardTitle>
             <CardDescription className="text-xs">
-              Live history of your recent code sandbox submissions and AI interview evaluations.
+              Live history of your recent code sandbox submissions and AI mock interview evaluations.
             </CardDescription>
           </CardHeader>
           <CardContent>

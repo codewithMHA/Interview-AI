@@ -12,6 +12,7 @@ import { UserRoadmapProgress } from '../models/UserRoadmapProgress.js';
 import { getDBStatus } from '../config/db.js';
 import { devStore } from '../services/devStore.js';
 import { autoSeedDatabase } from '../utils/autoSeed.js';
+import { buildActivityHeatmapData } from '../utils/activityHeatmap.js';
 
 export const getDashboardOverview = async (
   req: AuthenticatedRequest,
@@ -61,12 +62,21 @@ export const getDashboardOverview = async (
           isCompleted: true,
         }).populate('question');
         completedCount = questionStatuses.length;
-        completedQuestionsList = questionStatuses.map((qs: any) => qs.question).filter(Boolean);
+        completedQuestionsList = questionStatuses
+          .map((qs: any) =>
+            qs.question
+              ? {
+                  ...(qs.question.toObject ? qs.question.toObject() : qs.question),
+                  completedAt: qs.completedAt || qs.updatedAt,
+                }
+              : null
+          )
+          .filter(Boolean);
         bookmarkedCount = await UserQuestionStatus.countDocuments({
           user: resolvedUserId,
           isBookmarked: true,
         });
-        submissions = await Submission.find({ userId: resolvedUserId }).sort({ createdAt: -1 }).limit(200).lean();
+        submissions = await Submission.find({ userId: resolvedUserId }).sort({ createdAt: -1 }).limit(500).lean();
         interviews = await MockInterview.find(
           { userId: resolvedUserId },
           'role category interviewType status overallScore createdAt completedAt'
@@ -283,8 +293,16 @@ export const getDashboardOverview = async (
     realActivities.sort((a, b) => b.rawDate - a.rawDate);
     const recentActivity = realActivities.slice(0, 4);
 
+    const heatmapData = buildActivityHeatmapData({
+      submissions,
+      interviews,
+      completedQuestionsList,
+      allProblems,
+      profileStreakCount: profile?.streakCount,
+    });
+
     const targetRole = profile?.targetRole || 'Software Engineer';
-    const streakCount = profile?.streakCount ?? (realActivities.length > 0 ? 1 : 0);
+    const streakCount = heatmapData.streak;
     const xpPoints = profile?.xpPoints ?? 0;
     const level = Math.floor(xpPoints / 200) + 1;
 
@@ -293,6 +311,7 @@ export const getDashboardOverview = async (
       data: {
         preparationScore,
         streakCount,
+        bestStreak: heatmapData.bestStreak,
         xpPoints,
         level,
         targetRole,
@@ -329,6 +348,10 @@ export const getDashboardOverview = async (
           topic: 'DSA',
         },
         recentActivity,
+        activityMap: heatmapData.activityMap,
+        dailyActivityMap: heatmapData.dailyActivityMap,
+        heatmap: heatmapData.heatmap,
+        annualHeatmap: heatmapData.annualHeatmap,
       },
       timestamp: new Date().toISOString(),
     });

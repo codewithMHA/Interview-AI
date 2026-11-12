@@ -1,12 +1,12 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
-import { Sparkles, Github, Linkedin, Twitter, Code, Terminal, Brain, ShieldCheck } from 'lucide-react';
+import { Sparkles, Github, Linkedin, Twitter } from 'lucide-react';
 
 export const Footer: React.FC = () => {
   return (
     <footer className="border-t border-slate-200 dark:border-slate-800/80 bg-white dark:bg-[#07070c] transition-colors">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12 md:py-16">
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-8 lg:gap-12 mb-12">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-8 lg:gap-12 mb-12">
           {/* Brand info */}
           <div className="md:col-span-1 space-y-4">
             <Link to="/" className="flex items-center gap-3 group">
@@ -22,16 +22,34 @@ export const Footer: React.FC = () => {
               </span>
             </Link>
             <p className="text-sm text-slate-500 dark:text-slate-400 leading-relaxed">
-              Engineered for students preparing for Tier-1, Unicorn, and product-based software engineering campus placements.
+              Helping students prepare simply and confidently for coding tests, interviews, and campus placements.
             </p>
             <div className="flex items-center gap-3 text-slate-400 dark:text-slate-500">
-              <a href="https://github.com" target="_blank" rel="noreferrer" className="hover:text-brand-500 transition-colors">
+              <a
+                href="https://github.com/codewithMHA"
+                target="_blank"
+                rel="noreferrer"
+                className="hover:text-brand-500 transition-colors"
+                aria-label="GitHub Profile"
+              >
                 <Github className="w-4 h-4" />
               </a>
-              <a href="https://linkedin.com" target="_blank" rel="noreferrer" className="hover:text-brand-500 transition-colors">
+              <a
+                href="https://www.linkedin.com/in/mohammed-hassan-ahmed-aa5829280?utm_source=share_via&utm_content=profile&utm_medium=member_android"
+                target="_blank"
+                rel="noreferrer"
+                className="hover:text-brand-500 transition-colors"
+                aria-label="LinkedIn Profile"
+              >
                 <Linkedin className="w-4 h-4" />
               </a>
-              <a href="https://twitter.com" target="_blank" rel="noreferrer" className="hover:text-brand-500 transition-colors">
+              <a
+                href="https://twitter.com"
+                target="_blank"
+                rel="noreferrer"
+                className="hover:text-brand-500 transition-colors"
+                aria-label="Twitter Profile"
+              >
                 <Twitter className="w-4 h-4" />
               </a>
             </div>
@@ -43,7 +61,7 @@ export const Footer: React.FC = () => {
               Placement Modules
             </h4>
             <ul className="space-y-2.5 text-sm text-slate-600 dark:text-slate-400">
-              <li><Link to="/ai-interview" className="hover:text-brand-500 transition-colors font-medium text-indigo-600 dark:text-indigo-400">AI Interview (Voice)</Link></li>
+              <li><Link to="/ai-interview" className="hover:text-brand-500 transition-colors font-medium text-indigo-600 dark:text-indigo-400">AI Mock Interview (Voice)</Link></li>
               <li><Link to="/coding" className="hover:text-brand-500 transition-colors">DSA & Coding Sandbox</Link></li>
               <li><Link to="/practice-sandbox" className="hover:text-brand-500 transition-colors">Judge0 Code Playground</Link></li>
               <li><Link to="/placement-modules" className="hover:text-brand-500 transition-colors">Placement Engineering Tracks</Link></li>
@@ -67,30 +85,6 @@ export const Footer: React.FC = () => {
             </ul>
           </div>
 
-          {/* Architecture & Tech Stack */}
-          <div>
-            <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-900 dark:text-slate-200 mb-4">
-              Architecture
-            </h4>
-            <div className="space-y-2 text-xs text-slate-500 dark:text-slate-400">
-              <div className="flex items-center gap-2">
-                <Brain className="w-3.5 h-3.5 text-brand-500" />
-                <span>Gemini API Secure Proxy</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <Terminal className="w-3.5 h-3.5 text-emerald-500" />
-                <span>Judge0 Code Execution</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <Code className="w-3.5 h-3.5 text-blue-500" />
-                <span>React 18 + TypeScript + Vite</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <ShieldCheck className="w-3.5 h-3.5 text-amber-500" />
-                <span>JWT + Bcrypt Auth Security</span>
-              </div>
-            </div>
-          </div>
         </div>
 
         {/* Bottom bar */}
@@ -108,7 +102,7 @@ export const Footer: React.FC = () => {
             </p>
           </div>
           <div className="flex items-center gap-6">
-            <span>Production-grade REST Architecture</span>
+            <span>Built for smart campus placement preparation</span>
             <span className="inline-flex items-center gap-1.5 text-emerald-600 dark:text-emerald-400 font-medium">
               <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
               All Systems Operational

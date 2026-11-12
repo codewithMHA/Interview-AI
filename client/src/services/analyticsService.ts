@@ -19,6 +19,33 @@ export interface HeatmapDay {
   level: number;
 }
 
+export interface DailyActivityItem {
+  type: 'problem' | 'attempt' | 'interview' | 'question';
+  title: string;
+  detail?: string;
+  difficulty?: string;
+  status?: string;
+}
+
+export interface SolvedProblemDetail {
+  id: string;
+  title: string;
+  slug?: string;
+  difficulty?: string;
+  language?: string;
+}
+
+export interface DailyActivitySummary {
+  date: string;
+  totalCount: number;
+  problemsSolvedCount: number;
+  submissionsCount: number;
+  interviewsCount: number;
+  questionsCount: number;
+  solvedProblems: SolvedProblemDetail[];
+  activities: DailyActivityItem[];
+}
+
 export interface BadgeItem {
   id: string;
   title: string;
@@ -120,6 +147,7 @@ export interface AnalyticsDashboardData {
   streak: number;
   bestStreak?: number;
   activityMap?: Record<string, number>;
+  dailyActivityMap?: Record<string, DailyActivitySummary>;
   xpPoints: number;
   level: number;
   nextLevelXp: number;

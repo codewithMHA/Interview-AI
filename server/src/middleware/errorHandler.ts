@@ -12,8 +12,12 @@ export const errorHandler = (
   res: Response,
   next: NextFunction
 ) => {
-  const statusCode = err.statusCode || 500;
-  const message = err.message || 'Internal Server Error';
+  const isBadRequestError = err.name === 'CastError' || err.name === 'ValidationError';
+  const statusCode = err.statusCode || (isBadRequestError ? 400 : 500);
+  const message =
+    err.name === 'CastError' && !err.statusCode
+      ? 'Invalid identifier format'
+      : err.message || 'Internal Server Error';
 
   console.error(`[Error] ${req.method} ${req.url} - ${statusCode}: ${message}`);
   if (err.stack && env.NODE_ENV === 'development') {

@@ -41,12 +41,12 @@ export const getBenchmarkForQuestion = (question: string, category?: string, rol
 
   if (lower.includes('yourself') || lower.includes('journey') || lower.includes('background') || lower.includes('introduction')) {
     if (isSenior) {
-      return 'I am Mohammed Hassan Ahmed, a Computer Science and Engineering graduate with deep experience architecting full-stack systems with Node.js, React, and polyglot persistence. Across projects like the Electricity Usage and Salary Tracker, I focused on high-availability telemetry pipelines, WAL-backed state persistence, optimistic concurrency control under peak loads, and asynchronous AI inference pipelines using message buffers to isolate critical read paths from batch compute workloads.';
+      return 'I am a software engineer and systems architect experienced in designing high-availability full-stack platforms using polyglot persistence and asynchronous pipelines. Across production projects, I focused on fault isolation via message buffers, write consistency via WAL-backed stores and optimistic concurrency control, and observability-driven latency optimization.';
     }
     if (isSde2) {
-      return 'I am Mohammed Hassan Ahmed, a Computer Science and Engineering graduate specializing in scalable full-stack development with React, Node.js, and distributed databases. In my Salary and Electricity Usage Tracker, I designed event-driven telemetry ingestion pipelines, applied optimistic locking in MongoDB to eliminate race conditions during concurrent meter updates, and integrated asynchronous AI forecasting with Redis caching to maintain sub-50ms API response latencies.';
+      return 'I am a software engineer specializing in scalable full-stack development with React, Node.js, and relational/document databases. In my recent distributed backend project, I designed event-driven ingestion pipelines, applied optimistic concurrency control to prevent write race conditions, and layered Redis caching to keep API p95 latencies under 50ms.';
     }
-    return 'I am Mohammed Hassan Ahmed, a Computer Science and Engineering graduate who began my software engineering journey through a diploma in engineering and progressed into full-stack development. During my degree, I developed production-oriented applications including an Electricity Usage Tracker and a Salary Calculator, using React, Node.js, and MongoDB. I focus on writing clean, modular code, building responsive interfaces, and implementing RESTful APIs with solid error handling.';
+    return 'I am a Computer Science and Engineering graduate focusing on full-stack software development with React, Node.js, TypeScript, and databases. Across my academic and personal engineering projects, I built modular UI components, validated REST APIs, and applied core data structures and error handling to ensure reliable user workflows.';
   }
 
   if (lower.includes('acid') || (lower.includes('transaction') && lower.includes('database')) || lower.includes('wal') || lower.includes('write-ahead')) {
@@ -94,9 +94,9 @@ export const getBenchmarkForQuestion = (question: string, category?: string, rol
       return 'Situation: In our application, an edge-case rounding discrepancy in payroll overtime calculations led to data inaccuracies across cross-month billing periods. Task: I was responsible for diagnosing the root cause, remediating the calculation engine, and implementing preventative guards across our CI/CD pipeline. Action: I performed root-cause analysis, traced the issue to IEEE 754 floating-point inaccuracies and timezone offsets, refactored calculations to integer cents, and instituted automated property-based testing. Result: We eliminated calculation discrepancies, achieved 100% test fixture coverage, and established engineering standards that prevented similar precision bugs.';
     }
     if (isSde2) {
-      return 'Situation: In my Salary Calculator web application, intermittent calculation discrepancies were detected in monthly overtime pay during multi-month projections. Task: As the primary developer, I needed to isolate the issue without disrupting active sessions. Action: I reproduced the failure through automated regression tests, identifying a floating-point rounding artifact and timezone drift in month arithmetic. I migrated monetary calculations to integer cents and implemented strict validation boundaries. Result: The bug was eradicated with 100% test coverage across calendar boundaries, and I documented the floating-point arithmetic guidelines for future feature additions.';
+      return 'Situation: In a financial calculation service I maintained, intermittent discrepancies were detected in monthly billing projections. Task: As the primary developer, I needed to isolate the issue without disrupting active user sessions. Action: I reproduced the failure through automated regression tests, identifying a floating-point rounding artifact and timezone drift in month arithmetic. I migrated monetary calculations to integer cents and implemented strict validation boundaries. Result: The bug was resolved with 100% test coverage across calendar boundaries, and I documented precision-safe calculation guidelines for future additions.';
     }
-    return 'Situation: In my Salary Calculator web application developed with JavaScript, a calculation bug occurred where monthly overtime rates caused inaccurate total salary computations for users during specific calendar months. Task: I needed to rapidly isolate the algorithmic discrepancy without disrupting current user computations. Action: I reproduced the failure using isolated unit tests and discovered a floating-point rounding issue coupled with zero-indexed month handling in JavaScript Date. I refactored the calculation logic using integer cents representation and added strict validation guards. Result: The bug was completely eradicated, verified with 100% test coverage across all 12 calendar month test fixtures, ensuring consistent calculations.';
+    return 'Situation: In a JavaScript calculation module I developed, a precision bug occurred where monthly rate computations produced inaccurate totals across specific calendar months. Task: I needed to rapidly isolate the algorithmic discrepancy without breaking existing user workflows. Action: I reproduced the failure with isolated unit tests and discovered an IEEE 754 floating-point rounding issue coupled with zero-indexed month handling. I refactored calculations to use integer cents and added strict input validation. Result: The bug was completely resolved and verified with 100% test coverage across all 12 calendar month test fixtures.';
   }
 
   return 'A production-grade answer begins by defining functional and non-functional requirements: high availability, idempotency, and sub-50ms latency. Articulate trade-offs between optimistic and pessimistic concurrency control, explain failure recovery patterns (circuit breakers and dead-letter queues), and conclude with real-world production metrics.';
@@ -180,9 +180,10 @@ export const MockInterviewResultPage: React.FC = () => {
     );
   }
 
-  const candidateName = user?.name && user.name !== 'Mohammed Farooq' && !user.name.includes('Farooq') ? user.name : 'Mohammed Hassan Ahmed';
+  const candidateName = user?.name?.trim() || 'Candidate';
 
   // Count actually answered questions (verbal answer or written code)
+  const totalQuestionsCount = session.questions?.length || 0;
   const answeredQuestions = session.questions?.filter(
     (q) => (q.studentAnswer && q.studentAnswer.trim().length > 0) || (q.studentCode && q.studentCode.trim().length > 0)
   ) || [];
@@ -201,25 +202,71 @@ export const MockInterviewResultPage: React.FC = () => {
     }
   };
 
-  // Calculate realistic score based directly on questions answered by the candidate
+  // Helper to compute genuine average from answered questions when report aggregates aren't populated
+  const avgDimension = (pick: (fb: any) => number | undefined): number => {
+    const vals = answeredQuestions
+      .map((q) => (q.feedback ? pick(q.feedback) : undefined))
+      .filter((v): v is number => typeof v === 'number' && !isNaN(v));
+    if (vals.length === 0) return 0;
+    return Math.round(vals.reduce((a, b) => a + b, 0) / vals.length);
+  };
+
+  // Canonical score aligned with backend report & History view (0 when unscored/incomplete)
   const answeredScores = answeredQuestions
     .map((q) => q.feedback?.overallScore)
     .filter((s): s is number => typeof s === 'number');
 
-  const calculatedAverage = answeredScores.length > 0
-    ? Math.round(answeredScores.reduce((acc, curr) => acc + curr, 0) / answeredScores.length)
-    : 75;
+  const answeredAverage =
+    answeredScores.length > 0
+      ? Math.round(answeredScores.reduce((acc, curr) => acc + curr, 0) / answeredScores.length)
+      : session.report?.averageAnsweredScore ?? 0;
 
-  const overall = isSessionIncomplete ? 0 : calculatedAverage;
+  const backendOverall = session.report?.overallScore ?? session.overallScore;
+  const overall = isSessionIncomplete
+    ? 0
+    : typeof backendOverall === 'number'
+    ? backendOverall
+    : answeredAverage;
 
-  const avgScores = {
-    technicalDepth: session.report?.categoryScores?.technicalKnowledge ?? (isSessionIncomplete ? 0 : session.averageScores?.technicalDepth ?? 70),
-    correctness: session.report?.categoryScores?.problemSolving ?? (isSessionIncomplete ? 0 : session.averageScores?.correctness ?? 70),
-    communication: session.report?.categoryScores?.communicationClarity ?? (isSessionIncomplete ? 0 : session.averageScores?.communication ?? 75),
-    confidence: isSessionIncomplete ? 0 : session.averageScores?.confidence ?? 70,
-    clarity: session.report?.categoryScores?.conceptualUnderstanding ?? (isSessionIncomplete ? 0 : session.averageScores?.clarity ?? 75),
-    completeness: session.report?.categoryScores?.answerRelevance ?? (isSessionIncomplete ? 0 : session.averageScores?.completeness ?? 70),
-  };
+  const avgScores = isSessionIncomplete
+    ? {
+        correctness: 0,
+        technicalDepth: 0,
+        communication: 0,
+        relevance: 0,
+        completeness: 0,
+        clarity: 0,
+        confidence: 0,
+      }
+    : {
+        correctness:
+          session.averageScores?.correctness ??
+          session.report?.categoryScores?.problemSolving ??
+          avgDimension((fb) => fb.rubricBreakdown?.technicalCorrectness ?? fb.scores?.correctness),
+        technicalDepth:
+          session.averageScores?.technicalDepth ??
+          session.report?.categoryScores?.technicalKnowledge ??
+          avgDimension((fb) => fb.rubricBreakdown?.problemSolving ?? fb.scores?.technicalDepth),
+        communication:
+          session.averageScores?.communication ??
+          session.report?.categoryScores?.communicationClarity ??
+          avgDimension((fb) => fb.rubricBreakdown?.communication ?? fb.scores?.communication),
+        relevance:
+          session.report?.categoryScores?.answerRelevance ??
+          session.averageScores?.relevance ??
+          avgDimension((fb) => fb.rubricBreakdown?.relevance),
+        completeness:
+          session.report?.categoryScores?.completeness ??
+          session.averageScores?.completeness ??
+          avgDimension((fb) => fb.rubricBreakdown?.completeness ?? fb.scores?.completeness),
+        clarity:
+          session.averageScores?.clarity ??
+          session.report?.categoryScores?.conceptualUnderstanding ??
+          avgDimension((fb) => fb.scores?.clarity ?? fb.rubricBreakdown?.communication),
+        confidence:
+          session.averageScores?.confidence ??
+          avgDimension((fb) => fb.scores?.confidence),
+      };
 
   const getPreparationRecommendation = (score: number, answered: number) => {
     if (answered === 0 || score === 0) {
@@ -316,7 +363,7 @@ export const MockInterviewResultPage: React.FC = () => {
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(15);
       doc.setTextColor(79, 70, 229);
-      doc.text('InterviewAI · Autonomous Placement Simulator', margin, currentY);
+      doc.text('InterviewAI · Placement Assessment Report', margin, currentY);
 
       doc.setFontSize(8);
       doc.setTextColor(100, 116, 139);
@@ -377,7 +424,7 @@ export const MockInterviewResultPage: React.FC = () => {
       doc.text('Target Company:', margin + 105, currentY + 12);
       doc.setFont('helvetica', 'normal');
       doc.setTextColor(15, 23, 42);
-      doc.text(`${session.company || 'Amazon'}`, margin + 132, currentY + 12);
+      doc.text(`${(session.company && session.company.trim()) || 'General Tech'}`, margin + 132, currentY + 12);
 
       // Row 3
       doc.setFont('helvetica', 'bold');
@@ -385,7 +432,11 @@ export const MockInterviewResultPage: React.FC = () => {
       doc.text('Simulator Persona:', margin + 4, currentY + 18);
       doc.setFont('helvetica', 'normal');
       doc.setTextColor(15, 23, 42);
-      doc.text('Emily Zhou (AI Technical Interviewer)', margin + 35, currentY + 18);
+      doc.text(
+        `${session.interviewerName || 'Emily Zhou'} (${session.interviewerRole || 'AI Technical Interviewer'})`,
+        margin + 35,
+        currentY + 18
+      );
 
       doc.setFont('helvetica', 'bold');
       doc.setTextColor(71, 85, 105);
@@ -461,8 +512,8 @@ export const MockInterviewResultPage: React.FC = () => {
       doc.text(`${avgScores.correctness}%`, margin + 2, currentY + 5);
       doc.text(`${avgScores.technicalDepth}%`, margin + colW5 + 2, currentY + 5);
       doc.text(`${avgScores.communication}%`, margin + colW5 * 2 + 2, currentY + 5);
-      doc.text(`${avgScores.completeness}%`, margin + colW5 * 3 + 2, currentY + 5);
-      doc.text(`${avgScores.clarity}%`, margin + colW5 * 4 + 2, currentY + 5);
+      doc.text(`${avgScores.relevance}%`, margin + colW5 * 3 + 2, currentY + 5);
+      doc.text(`${avgScores.completeness}%`, margin + colW5 * 4 + 2, currentY + 5);
       currentY += 12;
 
       // 7. Question-by-Question Diagnostic & Benchmarks
@@ -476,21 +527,26 @@ export const MockInterviewResultPage: React.FC = () => {
       if (questionsToDisplay && questionsToDisplay.length > 0) {
         questionsToDisplay.forEach((q, idx) => {
           const hasAnswer = (q.studentAnswer && q.studentAnswer.trim().length > 0) || (q.studentCode && q.studentCode.trim().length > 0);
-          const qScore = hasAnswer ? (q.feedback?.overallScore ?? 75) : 0;
+          const hasStoredFeedback = Boolean(q.feedback && typeof q.feedback.overallScore === 'number');
+          const qScore = hasAnswer ? (hasStoredFeedback ? q.feedback!.overallScore : null) : 0;
           const fallbackModel = getBenchmarkForQuestion(q.question, q.category, session.role);
           const roleLabel = q.feedback?.roleLevel || (session.role?.toLowerCase().includes('senior') ? 'SENIOR STAFF ENGINEER' : session.role?.toLowerCase().includes('sde-2') ? 'SDE-2' : 'SDE-1');
 
-          const feedback = q.feedback && q.feedback.modelAnswer ? q.feedback : {
-            overallScore: qScore,
+          const feedback = hasStoredFeedback && q.feedback ? {
+            ...q.feedback,
+            modelAnswer: q.feedback.modelAnswer || fallbackModel,
+            roleLevel: roleLabel,
+          } : {
+            overallScore: qScore ?? 0,
             roleLevel: roleLabel,
             whatWentWell: hasAnswer
-              ? ['Articulated system perspective and problem domain clearly', 'Approached the question with structured communication']
+              ? ['Answer recorded cleanly; detailed per-question AI critique was not stored for this legacy session.']
               : ['Question was not attempted during this interview session.'],
             whatWasMissed: hasAnswer
-              ? ['Could incorporate specific concurrency locking mechanics, ACID guarantees, or runtime bounds under peak load']
+              ? ['Compare your response directly against the reference benchmark answer below.']
               : ['Candidate exited or completed session before answering this question. Reference model benchmark answer provided below.'],
-            missingConcepts: ['Core architectural mechanics and trade-offs'],
-            howToImprove: ['Review question requirements and articulate trade-offs, locks, and failure recovery.'],
+            missingConcepts: ['Reference concepts listed in the benchmark answer below'],
+            howToImprove: ['Review question requirements and articulate trade-offs, edge cases, and failure recovery.'],
             modelAnswer: fallbackModel,
           };
 
@@ -505,6 +561,9 @@ export const MockInterviewResultPage: React.FC = () => {
           if (!hasAnswer) {
             doc.setTextColor(100, 116, 139);
             doc.text(`Not Attempted`, margin + contentWidth - 27, currentY + 4);
+          } else if (qScore === null) {
+            doc.setTextColor(100, 116, 139);
+            doc.text(`Recorded`, margin + contentWidth - 25, currentY + 4);
           } else if (qScore >= 70) {
             doc.setTextColor(5, 150, 105);
             doc.text(`Score: ${qScore}%`, margin + contentWidth - 25, currentY + 4);
@@ -699,7 +758,7 @@ export const MockInterviewResultPage: React.FC = () => {
             className="inline-flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 transition-colors font-medium"
           >
             <ArrowLeft className="w-4 h-4" />
-            <span>Start Another AI Interview</span>
+            <span>Start Another AI Mock Interview</span>
           </Link>
 
           <div className="flex items-center gap-2">
@@ -756,7 +815,8 @@ export const MockInterviewResultPage: React.FC = () => {
             <div className="space-y-1">
               <div className="flex items-center gap-2">
                 <Badge variant="purple" size="sm">
-                  {session.company || 'Amazon'} · {session.roundType?.replace(/_/g, ' ') || 'Project Deep Dive'}
+                  {(session.company && session.company.trim()) || 'General Tech'} ·{' '}
+                  {(session.roundType || session.interviewType || 'Technical Interview').replace(/_/g, ' ')}
                 </Badge>
                 <span className="text-xs text-slate-400">
                   {new Date(session.completedAt || session.createdAt).toLocaleDateString()}
@@ -792,6 +852,11 @@ export const MockInterviewResultPage: React.FC = () => {
               >
                 {decision.badge}
               </Badge>
+              {!isSessionIncomplete && totalQuestionsCount > 0 && answeredCount < totalQuestionsCount && (
+                <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-1.5">
+                  Answered Avg: {answeredAverage}% · {answeredCount}/{totalQuestionsCount} answered
+                </p>
+              )}
             </div>
           </div>
 
@@ -891,12 +956,12 @@ export const MockInterviewResultPage: React.FC = () => {
               <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-[#141420] border border-slate-200 dark:border-slate-800">
                 <span className="text-[10px] font-bold text-slate-400 uppercase">Relevance (15%)</span>
                 <p className="text-lg font-extrabold text-slate-900 dark:text-white mt-1">
-                  {avgScores.completeness}%
+                  {avgScores.relevance}%
                 </p>
                 <div className="w-full bg-slate-200 dark:bg-slate-800 h-1.5 rounded-full mt-2 overflow-hidden">
                   <div
                     className="bg-blue-500 h-1.5 rounded-full"
-                    style={{ width: `${avgScores.completeness}%` }}
+                    style={{ width: `${avgScores.relevance}%` }}
                   />
                 </div>
               </div>
@@ -904,12 +969,12 @@ export const MockInterviewResultPage: React.FC = () => {
               <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-[#141420] border border-slate-200 dark:border-slate-800">
                 <span className="text-[10px] font-bold text-slate-400 uppercase">Completeness (10%)</span>
                 <p className="text-lg font-extrabold text-slate-900 dark:text-white mt-1">
-                  {avgScores.clarity}%
+                  {avgScores.completeness}%
                 </p>
                 <div className="w-full bg-slate-200 dark:bg-slate-800 h-1.5 rounded-full mt-2 overflow-hidden">
                   <div
                     className="bg-amber-500 h-1.5 rounded-full"
-                    style={{ width: `${avgScores.clarity}%` }}
+                    style={{ width: `${avgScores.completeness}%` }}
                   />
                 </div>
               </div>
@@ -951,19 +1016,24 @@ export const MockInterviewResultPage: React.FC = () => {
             {questionsToDisplay.map((q, idx) => {
               const isOpen = expandedQuestions.has(idx);
               const hasAnswer = (q.studentAnswer && q.studentAnswer.trim().length > 0) || (q.studentCode && q.studentCode.trim().length > 0);
-              const score = hasAnswer ? (q.feedback?.overallScore !== undefined ? q.feedback.overallScore : 75) : 0;
+              const hasStoredFeedback = Boolean(q.feedback && typeof q.feedback.overallScore === 'number');
+              const score = hasAnswer ? (hasStoredFeedback ? q.feedback!.overallScore : null) : 0;
               const fallbackModel = getBenchmarkForQuestion(q.question, q.category, session.role);
               const roleTitle = q.feedback?.roleLevel || (session.role?.toLowerCase().includes('senior') ? 'Senior Staff Engineer' : session.role?.toLowerCase().includes('sde-2') ? 'SDE-2' : 'SDE-1');
-              const feedback = q.feedback && q.feedback.modelAnswer ? q.feedback : {
-                overallScore: score,
+              const feedback = hasStoredFeedback && q.feedback ? {
+                ...q.feedback,
+                modelAnswer: q.feedback.modelAnswer || fallbackModel,
+                roleLevel: roleTitle,
+              } : {
+                overallScore: score ?? 0,
                 roleLevel: roleTitle,
                 whatWentWell: hasAnswer
-                  ? ['Clearly structured thoughts with system design rationale', 'Correctly identified core engineering trade-offs']
+                  ? ['Answer recorded cleanly; detailed per-question AI critique was not saved for this legacy entry.']
                   : ['Question was not attempted during this interview session.'],
                 whatWasMissed: hasAnswer
-                  ? ['Could mention specific runtime bounds under peak load']
+                  ? ['Compare your response directly against the reference benchmark answer below.']
                   : ['Candidate skipped or exited session before speaking an answer for this question. Reference model benchmark answer provided below.'],
-                missingConcepts: ['Core architectural mechanics and trade-offs'],
+                missingConcepts: ['Reference concepts listed in the benchmark answer below'],
                 howToImprove: [`Review the ${roleTitle} benchmark answer below to prepare this architecture topic.`],
                 modelAnswer: fallbackModel,
               };
@@ -992,7 +1062,7 @@ export const MockInterviewResultPage: React.FC = () => {
                     <div className="flex items-center gap-3 shrink-0">
                       <span
                         className={`text-xs font-bold px-2 py-0.5 rounded-lg border ${
-                          !hasAnswer
+                          !hasAnswer || score === null
                             ? 'text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-800/80 border-slate-300 dark:border-slate-700'
                             : score >= 70
                             ? 'text-emerald-700 dark:text-emerald-300 bg-emerald-100/60 dark:bg-emerald-950/40 border-emerald-300 dark:border-emerald-700/60'
@@ -1001,7 +1071,7 @@ export const MockInterviewResultPage: React.FC = () => {
                             : 'text-rose-700 dark:text-rose-300 bg-rose-100/60 dark:bg-rose-950/40 border-rose-300 dark:border-rose-700/60'
                         }`}
                       >
-                        {hasAnswer ? `${score}%` : 'Not Attempted'}
+                        {!hasAnswer ? 'Not Attempted' : score === null ? 'Recorded' : `${score}%`}
                       </span>
                       <ChevronDown
                         className={`w-4 h-4 text-slate-400 transition-transform duration-200 ${

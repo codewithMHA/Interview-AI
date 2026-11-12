@@ -74,7 +74,7 @@ export const solveDoubtWithAI = async (params: {
   topic?: string;
   role?: string;
 }): Promise<DoubtSolverResponse> => {
-  const response = await apiClient.post('/ai/solve-doubt', params);
+  const response = await apiClient.post('/ai/solve-doubt', params, { timeout: 45000 });
   return response.data.data;
 };
 
@@ -84,12 +84,16 @@ export const sendChatMessage = async (params: {
   topic?: string;
   role?: string;
 }): Promise<DoubtSolverResponse> => {
-  const response = await apiClient.post('/ai/chat', {
-    doubt: params.message,
-    conversationId: params.conversationId,
-    topic: params.topic,
-    role: params.role,
-  });
+  const response = await apiClient.post(
+    '/ai/chat',
+    {
+      doubt: params.message,
+      conversationId: params.conversationId,
+      topic: params.topic,
+      role: params.role,
+    },
+    { timeout: 45000 }
+  );
   return response.data.data;
 };
 

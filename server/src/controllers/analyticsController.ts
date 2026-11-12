@@ -10,6 +10,7 @@ import { UserQuestionStatus } from '../models/UserQuestionStatus.js';
 import { CodingProblem } from '../models/CodingProblem.js';
 import { Question } from '../models/Question.js';
 import { devStore } from '../services/devStore.js';
+import { buildActivityHeatmapData } from '../utils/activityHeatmap.js';
 
 export const getAnalyticsDashboard = async (
   req: AuthenticatedRequest,
@@ -49,7 +50,7 @@ export const getAnalyticsDashboard = async (
 
       if (mongoose.Types.ObjectId.isValid(resolvedUserId)) {
         profile = await Profile.findOne({ user: resolvedUserId });
-        submissions = await Submission.find({ userId: resolvedUserId }).sort({ createdAt: -1 }).limit(200).lean();
+        submissions = await Submission.find({ userId: resolvedUserId }).sort({ createdAt: -1 }).limit(500).lean();
         interviews = await MockInterview.find(
           { userId: resolvedUserId },
           'role category interviewType status overallScore averageScores scores createdAt completedAt'
@@ -66,7 +67,14 @@ export const getAnalyticsDashboard = async (
         
         completedQuestionsCount = questionStatuses.length;
         completedQuestionsList = questionStatuses
-          .map((qs: any) => qs.question)
+          .map((qs: any) =>
+            qs.question
+              ? {
+                  ...(qs.question.toObject ? qs.question.toObject() : qs.question),
+                  completedAt: qs.completedAt || qs.updatedAt,
+                }
+              : null
+          )
           .filter(Boolean);
 
         allProblems = await CodingProblem.find({}, 'title slug category difficulty companies');
@@ -371,97 +379,23 @@ export const getAnalyticsDashboard = async (
     }
 
     // =========================================================================
-    // 5. ACTIVITY MAP & STREAK (Consistency Tracker)
+    // 5. ACTIVITY MAP, DAILY DETAILS & STREAK (Consistency Tracker)
     // =========================================================================
-    const activityMap: Record<string, number> = {};
-    submissions.forEach((s) => {
-      const d = new Date(s.createdAt);
-      if (!isNaN(d.getTime())) {
-        const dateStr = d.toISOString().split('T')[0];
-        activityMap[dateStr] = (activityMap[dateStr] || 0) + 1;
-      }
-    });
-
-    interviews.forEach((i) => {
-      const d = new Date(i.createdAt || i.completedAt);
-      if (!isNaN(d.getTime())) {
-        const dateStr = d.toISOString().split('T')[0];
-        activityMap[dateStr] = (activityMap[dateStr] || 0) + 1;
-      }
-    });
-
     const today = new Date();
-    let realStreak = 0;
-    const checkCursor = new Date(today);
-    const todayStr = checkCursor.toISOString().split('T')[0];
-
-    if (activityMap[todayStr] && activityMap[todayStr] > 0) {
-      realStreak = 1;
-      checkCursor.setDate(checkCursor.getDate() - 1);
-      while (true) {
-        const prevStr = checkCursor.toISOString().split('T')[0];
-        if (activityMap[prevStr] && activityMap[prevStr] > 0) {
-          realStreak++;
-          checkCursor.setDate(checkCursor.getDate() - 1);
-        } else {
-          break;
-        }
-      }
-    } else {
-      checkCursor.setDate(checkCursor.getDate() - 1);
-      const yesterdayStr = checkCursor.toISOString().split('T')[0];
-      if (activityMap[yesterdayStr] && activityMap[yesterdayStr] > 0) {
-        realStreak = 1;
-        checkCursor.setDate(checkCursor.getDate() - 1);
-        while (true) {
-          const prevStr = checkCursor.toISOString().split('T')[0];
-          if (activityMap[prevStr] && activityMap[prevStr] > 0) {
-            realStreak++;
-            checkCursor.setDate(checkCursor.getDate() - 1);
-          } else {
-            break;
-          }
-        }
-      }
-    }
-
-    const streak =
-      realStreak > 0
-        ? realStreak
-        : submissions.length > 0 || completedInterviews.length > 0
-        ? profile?.streakCount ?? 1
-        : 0;
-
-    // Compute all-time best streak from recorded activity
-    let bestStreak = streak;
-    const activeDateKeys = Object.keys(activityMap)
-      .filter((k) => activityMap[k] > 0)
-      .sort();
-    if (activeDateKeys.length > 0) {
-      let currentRun = 0;
-      let maxRun = 0;
-      let lastDate: Date | null = null;
-      for (const dateKey of activeDateKeys) {
-        const curDate = new Date(dateKey);
-        if (!lastDate) {
-          currentRun = 1;
-        } else {
-          const diffDays = Math.round(
-            (curDate.getTime() - lastDate.getTime()) / (1000 * 60 * 60 * 24)
-          );
-          if (diffDays === 1) {
-            currentRun++;
-          } else if (diffDays > 1) {
-            currentRun = 1;
-          }
-        }
-        if (currentRun > maxRun) maxRun = currentRun;
-        lastDate = curDate;
-      }
-      bestStreak = Math.max(streak, maxRun, profile?.streakCount ?? 0, 1);
-    } else {
-      bestStreak = Math.max(streak, profile?.streakCount ?? 0, 0);
-    }
+    const {
+      activityMap,
+      dailyActivityMap,
+      heatmap,
+      annualHeatmap,
+      streak,
+      bestStreak,
+    } = buildActivityHeatmapData({
+      submissions,
+      interviews,
+      completedQuestionsList,
+      allProblems,
+      profileStreakCount: profile?.streakCount,
+    });
 
     const xpPoints = profile?.xpPoints ?? 0;
     const targetRole = profile?.targetRole || 'Software Engineer';
@@ -799,36 +733,6 @@ export const getAnalyticsDashboard = async (
       };
     }
 
-    // 30-day activity heatmap
-    const heatmap: Array<{ date: string; count: number; level: number }> = [];
-    for (let i = 29; i >= 0; i--) {
-      const d = new Date(today);
-      d.setDate(d.getDate() - i);
-      const dateStr = d.toISOString().split('T')[0];
-      const count = activityMap[dateStr] || 0;
-      const activityLevel = count >= 4 ? 3 : count >= 2 ? 2 : count > 0 ? 1 : 0;
-      heatmap.push({
-        date: dateStr,
-        count,
-        level: activityLevel,
-      });
-    }
-
-    // 365-day annual heatmap (GitHub / LeetCode style)
-    const annualHeatmap: Array<{ date: string; count: number; level: number }> = [];
-    for (let i = 364; i >= 0; i--) {
-      const d = new Date(today);
-      d.setDate(d.getDate() - i);
-      const dateStr = d.toISOString().split('T')[0];
-      const count = activityMap[dateStr] || 0;
-      const activityLevel = count >= 4 ? 4 : count >= 3 ? 3 : count >= 2 ? 2 : count > 0 ? 1 : 0;
-      annualHeatmap.push({
-        date: dateStr,
-        count,
-        level: activityLevel,
-      });
-    }
-
     // Achievement badges (authentic unlock conditions)
     const badges = [
       {
@@ -933,6 +837,7 @@ export const getAnalyticsDashboard = async (
         streak,
         bestStreak,
         activityMap,
+        dailyActivityMap,
         xpPoints,
         level,
         nextLevelXp,

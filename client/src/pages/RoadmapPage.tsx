@@ -58,17 +58,8 @@ import { Modal } from '@/components/common/Modal';
 import { Skeleton } from '@/components/common/Skeleton';
 
 export const RoadmapPage: React.FC = () => {
-  const { user, isAuthenticated, login } = useAuth();
+  const { user, isAuthenticated } = useAuth();
   const navigate = useNavigate();
-
-  const handleDemoLogin = async () => {
-    try {
-      await login('student@demo.com', 'password123');
-      window.location.reload();
-    } catch (err) {
-      console.error(err);
-    }
-  };
 
   // State
   const [activeRoadmap, setActiveRoadmap] = useState<Roadmap | null>(null);

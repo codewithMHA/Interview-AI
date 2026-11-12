@@ -92,18 +92,17 @@ export const autoSeedDatabase = async (): Promise<AutoSeedResult> => {
       console.log(`[AutoSeed] ✅ Placement roadmaps seeded successfully.`);
     }
 
-    // 4. Auto-Seed Demo Student Account (student@placement.edu / Placement2026!)
+    // 4. Seed test student account only in non-production/test environments (no demo account in production)
+    const shouldSeedTestAccount =
+      process.env.NODE_ENV !== 'production' || process.env.ALLOW_DEMO_LOGIN === 'true';
     const demoEmail = 'student@placement.edu';
-    
-    // Automatically update any legacy "Mohammed Farooq" records to "Mohammed Hassan Ahmed"
-    await User.updateMany({ name: 'Mohammed Farooq' }, { $set: { name: 'Mohammed Hassan Ahmed' } });
-    await Profile.updateMany({ name: 'Mohammed Farooq' }, { $set: { name: 'Mohammed Hassan Ahmed', githubProfile: 'https://github.com/codewithMHA', linkedinProfile: 'https://linkedin.com/in/mohammed-hassan-ahmed' } });
-
-    let demoUser = await User.findOne({ email: demoEmail }).select('+password');
-    if (!demoUser) {
+    let demoUser = shouldSeedTestAccount
+      ? await User.findOne({ email: demoEmail }).select('+password')
+      : null;
+    if (shouldSeedTestAccount && !demoUser) {
       console.log(`[AutoSeed] Creating default Demo Student account (${demoEmail})...`);
       demoUser = await User.create({
-        name: 'Mohammed Hassan Ahmed',
+        name: 'Demo Student',
         email: demoEmail,
         password: 'Placement2026!',
         role: 'student',
@@ -111,7 +110,7 @@ export const autoSeedDatabase = async (): Promise<AutoSeedResult> => {
 
       const demoProfile = await Profile.create({
         user: demoUser._id,
-        name: 'Mohammed Hassan Ahmed',
+        name: 'Demo Student',
         email: demoEmail,
         college: 'National Institute of Technology',
         degree: 'B.Tech in Computer Science & Engineering',
@@ -120,8 +119,8 @@ export const autoSeedDatabase = async (): Promise<AutoSeedResult> => {
         experienceLevel: 'Intermediate',
         programmingLanguages: ['JavaScript', 'TypeScript', 'Python', 'C++'],
         skills: ['Data Structures', 'Algorithms', 'React', 'Node.js', 'MongoDB', 'System Design'],
-        githubProfile: 'https://github.com/codewithMHA',
-        linkedinProfile: 'https://linkedin.com/in/mohammed-hassan-ahmed',
+        githubProfile: '',
+        linkedinProfile: '',
         preparationScore: 78,
         streakCount: 5,
         xpPoints: 1250,
@@ -132,7 +131,7 @@ export const autoSeedDatabase = async (): Promise<AutoSeedResult> => {
       demoUser.profile = demoProfile._id as any;
       await demoUser.save();
 
-      // Seed demo submission & mock interview for rich dashboard metrics
+      // Seed demo submission & mock interview matching MockInterviewSchema
       const sampleProblem = await CodingProblem.findOne({ slug: 'two-sum' });
       if (sampleProblem) {
         await Submission.create({
@@ -150,37 +149,66 @@ export const autoSeedDatabase = async (): Promise<AutoSeedResult> => {
 
       await MockInterview.create({
         userId: demoUser._id,
+        title: 'Full Stack Engineer · Technical Sample',
+        interviewType: 'Technical',
+        roundType: 'technical_stack',
         role: 'Full Stack Engineer',
-        category: 'Technical',
+        difficulty: 'Intermediate',
         status: 'completed',
-        scores: {
-          overallScore: 82,
-          technicalScore: 85,
-          communicationScore: 80,
-          confidenceScore: 81,
+        currentStage: 'completed',
+        numberOfQuestions: 1,
+        overallScore: 84,
+        averageScores: {
+          correctness: 86,
+          technicalDepth: 84,
+          clarity: 82,
+          confidence: 84,
+          completeness: 80,
+          communication: 82,
+          relevance: 88,
         },
-        feedback: {
-          strengths: ['Clear intuition on hash tables', 'Solid communication of algorithmic trade-offs'],
-          improvements: ['Elaborate more on edge cases with negative numbers'],
-          recommendations: ['Practice dynamic programming problems under timed conditions'],
-        },
-        durationMinutes: 25,
+        questions: [
+          {
+            id: 'q-seed-1',
+            question: 'How does a Hash Map resolve key collisions and maintain O(1) average lookup complexity?',
+            category: 'Technical',
+            difficulty: 'Intermediate',
+            stage: 'main',
+            expectedPoints: ['Hashing function & bucket indexing', 'Separate chaining vs open addressing', 'Load factor & rehashing at 0.75'],
+            studentAnswer: 'A hash map hashes keys into bucket indices and handles collisions with linked lists or balanced trees once buckets grow, resizing when load factor crosses 0.75.',
+            answeredAt: new Date(),
+            feedback: {
+              overallScore: 84,
+              scores: { correctness: 86, technicalDepth: 84, clarity: 82, confidence: 84, completeness: 80, communication: 82 },
+              rubricBreakdown: {
+                technicalCorrectness: 86,
+                problemSolving: 84,
+                communication: 82,
+                relevance: 88,
+                completeness: 80,
+                scoringFormula: 'Score = (Correctness * 0.30) + (ProblemSolving * 0.25) + (Communication * 0.20) + (Relevance * 0.15) + (Completeness * 0.10)',
+              },
+              roleLevel: 'SDE-1',
+              whatWentWell: ['Clearly explained hashing, collision chaining, and dynamic resizing'],
+              whatWasMissed: ['Could briefly mention worst-case O(N) vs treeified O(log N) bucket lookups'],
+              missingConcepts: ['Treeified buckets in Java 8+'],
+              howToImprove: ['Include concrete amortized vs worst-case complexity bounds'],
+              modelAnswer: 'Hash maps map keys via hash functions to array buckets. Collisions are resolved using separate chaining or open addressing, and resizing occurs when load factor (default 0.75) triggers amortized O(1) lookup.',
+              recommendedTopics: ['Hashing & Load Factor Trade-offs'],
+            },
+          },
+        ],
+        completedAt: new Date(),
       });
 
       didSeed = true;
       console.log(`[AutoSeed] ✅ Demo Student account created with complete profile and metrics.`);
-    } else {
-      // Ensure existing demo user has correct name and profile
-      if (demoUser.name !== 'Mohammed Hassan Ahmed') {
-        demoUser.name = 'Mohammed Hassan Ahmed';
-        await demoUser.save();
-      }
-
+    } else if (shouldSeedTestAccount && demoUser) {
       const existingProfile = await Profile.findOne({ user: demoUser._id });
       if (!existingProfile) {
         const demoProfile = await Profile.create({
           user: demoUser._id,
-          name: 'Mohammed Hassan Ahmed',
+          name: demoUser.name || 'Demo Student',
           email: demoUser.email,
           college: 'National Institute of Technology',
           degree: 'B.Tech in Computer Science & Engineering',
@@ -189,8 +217,8 @@ export const autoSeedDatabase = async (): Promise<AutoSeedResult> => {
           experienceLevel: 'Intermediate',
           programmingLanguages: ['JavaScript', 'TypeScript', 'Python', 'C++'],
           skills: ['Data Structures', 'Algorithms', 'React', 'Node.js', 'MongoDB', 'System Design'],
-          githubProfile: 'https://github.com/codewithMHA',
-          linkedinProfile: 'https://linkedin.com/in/mohammed-hassan-ahmed',
+          githubProfile: '',
+          linkedinProfile: '',
           preparationScore: 78,
           streakCount: 5,
           xpPoints: 1250,
@@ -199,15 +227,6 @@ export const autoSeedDatabase = async (): Promise<AutoSeedResult> => {
         });
         demoUser.profile = demoProfile._id as any;
         await demoUser.save();
-      } else {
-        await Profile.updateOne(
-          { user: demoUser._id },
-          {
-            name: 'Mohammed Hassan Ahmed',
-            githubProfile: 'https://github.com/codewithMHA',
-            linkedinProfile: 'https://linkedin.com/in/mohammed-hassan-ahmed',
-          }
-        );
       }
     }
 

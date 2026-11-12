@@ -1,9 +1,15 @@
 import { apiClient } from './api';
-import { CategoryScores, CompanyReadinessItem } from './analyticsService';
+import {
+  CategoryScores,
+  CompanyReadinessItem,
+  DailyActivitySummary,
+  HeatmapDay,
+} from './analyticsService';
 
 export interface DashboardOverview {
   preparationScore: number;
   streakCount: number;
+  bestStreak?: number;
   xpPoints: number;
   level: number;
   targetRole: string;
@@ -50,6 +56,10 @@ export interface DashboardOverview {
     timestamp: string;
     score: string;
   }>;
+  activityMap?: Record<string, number>;
+  dailyActivityMap?: Record<string, DailyActivitySummary>;
+  heatmap?: HeatmapDay[];
+  annualHeatmap?: HeatmapDay[];
 }
 
 export const fetchDashboardOverview = async (): Promise<DashboardOverview> => {

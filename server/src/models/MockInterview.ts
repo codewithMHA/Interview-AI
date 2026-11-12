@@ -35,6 +35,7 @@ export interface IMockInterviewQuestionItem {
   stage?: 'introduction' | 'main' | 'followup' | 'scenario' | 'wrapup';
   expectedPoints: string[];
   sampleFollowUp?: string;
+  requiresCode?: boolean;
   studentAnswer?: string;
   studentCode?: string;
   codeLanguage?: string;
@@ -56,7 +57,8 @@ export interface ICodingProblem {
 
 export interface IInterviewReport {
   overallScore: number;
-  completionStatus: 'completed' | 'abandoned';
+  averageAnsweredScore?: number;
+  completionStatus: 'completed' | 'partially_completed' | 'incomplete' | 'abandoned';
   questionsAnswered: number;
   questionsSkipped: number;
   totalDurationMinutes: number;
@@ -66,6 +68,7 @@ export interface IInterviewReport {
     problemSolving: number;
     answerRelevance: number;
     conceptualUnderstanding: number;
+    completeness?: number;
   };
   detailedFeedback: {
     strongAnswers: string[];
@@ -93,6 +96,7 @@ export interface IMockInterview extends Document {
   userId: mongoose.Types.ObjectId | string;
   title?: string;
   interviewType: string; // 'HR' | 'Technical' | 'Coding' | 'Java' | 'Python' | 'Frontend Developer' | 'Backend Developer' | 'Full Stack Developer' | 'AI/ML' | 'Database' | 'Custom'
+  roundType?: string;
   role: string;
   experienceLevel: 'Fresher' | 'Student' | 'Experienced';
   company?: string;
@@ -113,6 +117,7 @@ export interface IMockInterview extends Document {
     confidence: number;
     completeness: number;
     communication: number;
+    relevance?: number;
   };
   report?: IInterviewReport;
   summaryFeedback?: string;
@@ -179,6 +184,7 @@ const MockInterviewQuestionItemSchema = new Schema<IMockInterviewQuestionItem>(
     },
     expectedPoints: { type: [String], default: [] },
     sampleFollowUp: { type: String },
+    requiresCode: { type: Boolean, default: false },
     studentAnswer: { type: String },
     studentCode: { type: String },
     codeLanguage: { type: String },
@@ -198,6 +204,7 @@ const MockInterviewSchema = new Schema<IMockInterview>(
       default: 'Technical',
       index: true,
     },
+    roundType: { type: String, default: '' },
     role: { type: String, required: true },
     experienceLevel: {
       type: String,
@@ -248,6 +255,7 @@ const MockInterviewSchema = new Schema<IMockInterview>(
       confidence: { type: Number },
       completeness: { type: Number },
       communication: { type: Number },
+      relevance: { type: Number },
     },
     report: { type: Schema.Types.Mixed },
     summaryFeedback: { type: String },

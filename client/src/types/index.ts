@@ -256,6 +256,7 @@ export interface MockInterviewQuestionItem {
   stage?: 'introduction' | 'main' | 'followup' | 'scenario' | 'wrapup';
   expectedPoints: string[];
   sampleFollowUp?: string;
+  requiresCode?: boolean;
   studentAnswer?: string;
   studentCode?: string;
   codeLanguage?: string;
@@ -277,7 +278,8 @@ export interface InterviewCodingProblem {
 
 export interface InterviewReport {
   overallScore: number;
-  completionStatus: 'completed' | 'abandoned';
+  averageAnsweredScore?: number;
+  completionStatus: 'completed' | 'partially_completed' | 'incomplete' | 'abandoned';
   questionsAnswered: number;
   questionsSkipped: number;
   totalDurationMinutes: number;
@@ -287,6 +289,7 @@ export interface InterviewReport {
     problemSolving: number;
     answerRelevance: number;
     conceptualUnderstanding: number;
+    completeness?: number;
   };
   detailedFeedback: {
     strongAnswers: string[];
@@ -346,6 +349,7 @@ export interface MockInterviewDetailedSession {
     confidence: number;
     completeness: number;
     communication: number;
+    relevance?: number;
   };
   report?: InterviewReport;
   summaryFeedback?: string;

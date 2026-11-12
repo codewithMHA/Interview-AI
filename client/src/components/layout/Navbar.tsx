@@ -148,7 +148,7 @@ export const Navbar: React.FC = () => {
 
   const placementItems = [
     {
-      title: 'AI Interview',
+      title: 'AI Mock Interview',
       subtitle: 'Real-time voice & video placement interview',
       href: '/ai-interview',
       icon: Bot,
@@ -197,18 +197,13 @@ export const Navbar: React.FC = () => {
               </div>
               <div className="absolute -bottom-0.5 -right-0.5 w-3 h-3 bg-emerald-500 rounded-full border-2 border-white dark:border-[#07070c]" />
             </div>
-            <div className="flex flex-col">
-              <span className="font-black text-xl tracking-tight text-slate-900 dark:text-white flex items-center gap-0.5">
-                <span>Interview</span>
-                <span className="bg-gradient-to-r from-emerald-500 via-teal-400 to-indigo-500 bg-clip-text text-transparent font-black drop-shadow-xs">
-                  AI
-                </span>
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 ml-0.5 animate-pulse" />
+            <span className="font-black text-xl tracking-tight text-slate-900 dark:text-white flex items-center gap-0.5">
+              <span>Interview</span>
+              <span className="bg-gradient-to-r from-emerald-500 via-teal-400 to-indigo-500 bg-clip-text text-transparent font-black drop-shadow-xs">
+                AI
               </span>
-              <span className="text-[10px] font-semibold tracking-wider uppercase text-slate-400 dark:text-slate-500 -mt-1">
-                Autonomous Placement OS
-              </span>
-            </div>
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 ml-0.5 animate-pulse" />
+            </span>
           </Link>
 
           {/* Desktop Navigation - Clean, Modern & Dropdown Grouped */}

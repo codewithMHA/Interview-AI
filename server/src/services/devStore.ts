@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
 import { SEED_QUESTIONS, SeedQuestion } from '../data/seedQuestions.js';
 import { SEED_PROBLEMS, SeedProblem } from '../data/seedProblems.js';
@@ -191,7 +192,7 @@ class DevStore {
     const hashedPassword = bcrypt.hashSync('Placement2026!', 10);
     this.users.set('student@placement.edu', {
       id: demoId,
-      name: 'Mohammed Hassan Ahmed',
+      name: 'Demo Student',
       email: 'student@placement.edu',
       password: hashedPassword,
       role: 'student',
@@ -200,7 +201,7 @@ class DevStore {
 
     this.profiles.set(demoId, {
       userId: demoId,
-      name: 'Mohammed Hassan Ahmed',
+      name: 'Demo Student',
       email: 'student@placement.edu',
       college: 'National Institute of Technology',
       degree: 'B.Tech in Computer Science & Engineering',
@@ -209,8 +210,8 @@ class DevStore {
       experienceLevel: 'Intermediate',
       programmingLanguages: ['JavaScript', 'TypeScript', 'Python', 'C++'],
       skills: ['Data Structures', 'Algorithms', 'React', 'Node.js', 'MongoDB', 'System Design'],
-      githubProfile: 'https://github.com/codewithMHA',
-      linkedinProfile: 'https://linkedin.com/in/mohammed-hassan-ahmed',
+      githubProfile: '',
+      linkedinProfile: '',
       preparationScore: 78,
       streakCount: 2,
       xpPoints: 820,
@@ -267,7 +268,7 @@ class DevStore {
   }
 
   async createUser(data: { name: string; email: string; password: string; role?: 'student' | 'admin' }): Promise<DevUser> {
-    const id = 'user-' + Date.now() + '-' + Math.random().toString(36).substr(2, 6);
+    const id = crypto.randomBytes(12).toString('hex');
     const hashedPassword = await bcrypt.hash(data.password, 10);
     const user: DevUser = {
       id,
@@ -1023,7 +1024,7 @@ class DevStore {
   public getConversations(userId: string = 'guest'): DevConversation[] {
     const list: DevConversation[] = [];
     for (const conv of this.conversations.values()) {
-      if (conv.userId === userId || userId === 'guest') {
+      if (String(conv.userId) === String(userId)) {
         list.push(conv);
       }
     }

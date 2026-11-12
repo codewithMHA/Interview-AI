@@ -65,7 +65,7 @@ const INTERVIEWER_PERSONAS: InterviewerPersona[] = [
     name: 'Emily Zhou',
     role: 'Senior Software Engineer',
     company: 'Amazon / AWS Cloud',
-    avatar: 'https://images.unsplash.com/photo-1580894732444-8ecded7900cd?w=400&auto=format&fit=crop&q=80',
+    avatar: 'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?w=600&h=600&auto=format&fit=crop&crop=faces,center&q=85',
     bio: 'Runs technical deep dives and system architecture rounds at Amazon. Probes scalability, concurrency, and real-world trade-offs.',
     style: 'Direct, analytical, focused on production edge cases & ACID guarantees.',
   },
@@ -74,7 +74,7 @@ const INTERVIEWER_PERSONAS: InterviewerPersona[] = [
     name: 'Marcus Vance',
     role: 'Staff Infrastructure Architect',
     company: 'Google Cloud Platform',
-    avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=400&auto=format&fit=crop&q=80',
+    avatar: 'https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?w=600&h=600&auto=format&fit=crop&crop=faces,center&q=85',
     bio: 'Ex-Meta engineering lead. Evaluates code execution speed, distributed systems primitives, and OS-level bottlenecks.',
     style: 'Thorough, inquisitive, challenges assumptions about time/space complexity.',
   },
@@ -83,7 +83,7 @@ const INTERVIEWER_PERSONAS: InterviewerPersona[] = [
     name: 'Priya Sharma',
     role: 'Engineering Lead',
     company: 'Razorpay / Fintech',
-    avatar: 'https://images.unsplash.com/photo-1580489944761-15a19d654956?w=400&auto=format&fit=crop&q=80',
+    avatar: 'https://images.unsplash.com/photo-1580489944761-15a19d654956?w=600&h=600&auto=format&fit=crop&crop=faces,center&q=85',
     bio: 'Leads core banking APIs and high-availability systems. Specializes in full-stack architecture and clean code craftsmanship.',
     style: 'Encouraging, structured, evaluates end-to-end API contracts & error handling.',
   },
@@ -92,7 +92,7 @@ const INTERVIEWER_PERSONAS: InterviewerPersona[] = [
     name: 'David Chen',
     role: 'Engineering Director & Hiring Manager',
     company: 'Microsoft / Enterprise SWE',
-    avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=400&auto=format&fit=crop&q=80',
+    avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=600&h=600&auto=format&fit=crop&crop=faces,center&q=85',
     bio: 'Assesses cultural fit, STAR storytelling, cross-functional ownership, and long-term engineering potential.',
     style: 'Warm, behavioral-focused, probes real impact and team friction resolution.',
   },
@@ -255,14 +255,14 @@ export const MockInterviewSetupPage: React.FC = () => {
         if (saved && saved.content && saved.content.trim().length > 0) {
           const cleanContent = extractReadableResumeText(
             saved.content,
-            saved.fileName || 'Mohammed_Hassan_Resume.pdf'
+            saved.fileName || 'Saved_Resume.pdf'
           ).slice(0, 5000);
           setResumeText(cleanContent);
-          setResumeFileName(saved.fileName || 'Mohammed_Hassan_Resume.pdf');
+          setResumeFileName(saved.fileName || 'Saved_Resume.pdf');
           const topics = saved.topics && saved.topics.length > 0 ? saved.topics : parseUserResume(cleanContent);
           setParsedTopics(topics);
           setSavedResumeMeta({
-            fileName: saved.fileName || 'Mohammed_Hassan_Resume.pdf',
+            fileName: saved.fileName || 'Saved_Resume.pdf',
             updatedAt: saved.updatedAt || new Date().toISOString(),
             fileSize: saved.fileSize || '18 KB',
             charCount: cleanContent.length,
@@ -285,7 +285,8 @@ export const MockInterviewSetupPage: React.FC = () => {
     // 2. Fallback: Auto-populate from user's saved profile if available
     if (profile && profile.skills && profile.skills.length > 0 && !resumeText) {
       const edu = [profile.degree, profile.college].filter(Boolean).join(' - ') || 'Computer Science Engineering';
-      const generatedFromProfile = `${user?.name || 'Mohammed Hassan Ahmed'}\n${user?.email || 'mhassan2k5@gmail.com'}\nCollege: ${profile.college || 'Engineering College'}\n\nTECHNICAL SKILLS:\n${profile.skills.join(', ')}\n\nEDUCATION & FOCUS:\n${edu}\nTarget Role: ${profile.targetRole || 'Software Development Engineer'}\n\nPROJECTS:\n1. Cloud Microservices Platform with Node.js, React, and MongoDB - High-scale REST APIs, ACID guarantees, and caching.`;
+      const contactLine = user?.email ? `\n${user.email}` : '';
+      const generatedFromProfile = `${user?.name || 'Candidate'}${contactLine}\nCollege: ${profile.college || 'Engineering College'}\n\nTECHNICAL SKILLS:\n${profile.skills.join(', ')}\n\nEDUCATION & FOCUS:\n${edu}\nTarget Role: ${profile.targetRole || 'Software Development Engineer'}\n\nPROJECTS:\n1. Full-Stack Web & API Project with Node.js, React, and MongoDB - REST APIs, data validation, and caching.`;
       setResumeText(generatedFromProfile);
       setParsedTopics(parseUserResume(generatedFromProfile));
       setSkillsInput(profile.skills.join(', '));
@@ -383,9 +384,12 @@ export const MockInterviewSetupPage: React.FC = () => {
     const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
     const topics: ResumeTopicItem[] = [];
 
-    // 1. Profile Topic (Header, contact, student info - Matching Photo 4 Card 1)
-    const candidateName = lines[0] || (user?.name || 'Mohammed Hassan Ahmed');
-    const headline = lines.slice(1, 4).join(' | ') || 'Computer Science Engineering | Web Development 9482364185 | College Email LinkedIn | GitHub';
+    // 1. Profile Topic (Header, contact, student info)
+    const candidateName = lines[0] || user?.name || 'Candidate';
+    const defaultHeadline =
+      [profile?.degree, profile?.college, profile?.targetRole].filter(Boolean).join(' | ') ||
+      'Computer Science Engineering | Software Development';
+    const headline = lines.slice(1, 4).join(' | ') || defaultHeadline;
     topics.push({
       id: 'topic-profile-card',
       title: `${candidateName}`,
@@ -505,8 +509,8 @@ export const MockInterviewSetupPage: React.FC = () => {
       }
 
       // If PDF text is stream-compressed (/FlateDecode), synthesize a concise verified profile
-      const candidate = user?.name || 'Mohammed Hassan Ahmed';
-      return `${candidate}\nComputer Science & Engineering | Software Developer\nResume File: ${fileName}\n\nTECHNICAL SKILLS:\nJavaScript, React.js, Node.js, Express.js, MongoDB, SQL, Data Structures & Algorithms\n\nEDUCATION & BACKGROUND:\nBachelor of Computer Science and Engineering\n\nPROJECTS:\n1. Cloud Microservices & Scalable Web Application with Node.js, React, and MongoDB.\n2. Automated Utility Usage & Transaction Processing Engine with ACID consistency.`;
+      const candidate = user?.name || 'Candidate';
+      return `${candidate}\nComputer Science & Engineering | Software Developer\nResume File: ${fileName}\n\nTECHNICAL SKILLS:\n${skillsInput || 'JavaScript, React.js, Node.js, SQL, Data Structures & Algorithms'}\n\nEDUCATION & BACKGROUND:\nBachelor of Computer Science and Engineering\n\nPROJECTS:\n1. Scalable Full-Stack Application (${fileName}) - API design, state persistence, and testing.`;
     }
 
     return rawContent.replace(/\0/g, '').slice(0, 5000);
@@ -641,7 +645,12 @@ export const MockInterviewSetupPage: React.FC = () => {
         interviewerRole: selectedInterviewer.role,
         interviewerAvatar: selectedInterviewer.avatar,
         resumeTopics: finalTopics,
-        candidateNotes: `# Talking Points - ${selectedCompany} ${selectedRole}\n- Candidate: ${user?.name || 'Applicant'}\n- Role: ${selectedRole}\n- Interviewer: ${selectedInterviewer.name} (${selectedInterviewer.role})\n\n## Key Talking Points\n- [ ] Walk through high-level project component architecture\n- [ ] Highlight ACID transaction guarantees & concurrency locks\n- [ ] Address bottlenecks and latency trade-offs\n`,
+        candidateNotes:
+          selectedType === 'HR'
+            ? `# Talking Points - ${selectedCompany} ${selectedRole}\n- Candidate: ${user?.name || 'Applicant'}\n- Round: HR & Behavioral\n\n## Key STAR Notes\n- [ ] Situation & Task (clear context)\n- [ ] Action (what I personally built or resolved)\n- [ ] Result (measurable impact & takeaway)\n`
+            : selectedType === 'Coding'
+            ? `# Talking Points - ${selectedCompany} Coding Round\n- Candidate: ${user?.name || 'Applicant'}\n- Role: ${selectedRole}\n\n## Problem-Solving Checklist\n- [ ] Clarify constraints & edge cases first\n- [ ] Compare brute-force vs optimal time/space complexity\n- [ ] Dry run implementation before finalizing\n`
+            : `# Talking Points - ${selectedCompany} ${selectedRole}\n- Candidate: ${user?.name || 'Applicant'}\n- Track: ${selectedType}\n- Interviewer: ${selectedInterviewer.name} (${selectedInterviewer.role})\n\n## Key Talking Points\n- [ ] Walk through project architecture & design choices\n- [ ] Explain core ${selectedType} concepts & trade-offs\n- [ ] Cover bottlenecks, edge cases, and reliability\n`,
       };
 
       const session = await startMockInterview(payload);
@@ -659,13 +668,14 @@ export const MockInterviewSetupPage: React.FC = () => {
     }
   };
 
-  // Performance Dashboard Calculations
+  // Performance Dashboard Calculations (strictly from real recorded session scores)
   const completedInterviews = history.filter((h) => h.status === 'completed');
+  const scoredCompleted = completedInterviews.filter((h) => typeof h.overallScore === 'number');
   const avgScore =
-    completedInterviews.length > 0
+    scoredCompleted.length > 0
       ? Math.round(
-          completedInterviews.reduce((acc, curr) => acc + (curr.overallScore || 75), 0) /
-            completedInterviews.length
+          scoredCompleted.reduce((acc, curr) => acc + (curr.overallScore ?? 0), 0) /
+            scoredCompleted.length
         )
       : 0;
   const bestScore =
@@ -1563,9 +1573,27 @@ export const MockInterviewSetupPage: React.FC = () => {
                           key={t.id}
                           onClick={() => {
                             setSelectedType(t.id);
-                            if (t.id === 'Coding') setSelectedRole('Software Development Engineer');
-                            else if (t.id === 'Frontend Developer') setSelectedRole('Frontend Engineer');
-                            else if (t.id === 'Backend Developer') setSelectedRole('Backend Systems Engineer');
+                            if (t.id === 'Coding') {
+                              setSelectedRole('Software Development Engineer');
+                              setSelectedRound('technical_stack');
+                            } else if (t.id === 'Frontend Developer') {
+                              setSelectedRole('Frontend Engineer');
+                              setSelectedRound('technical_stack');
+                            } else if (t.id === 'Backend Developer') {
+                              setSelectedRole('Backend Systems Engineer');
+                              setSelectedRound('technical_stack');
+                            } else if (t.id === 'Full Stack Developer') {
+                              setSelectedRole('Full Stack Developer');
+                              setSelectedRound('project_deep_dive');
+                            } else if (t.id === 'Java' || t.id === 'Python' || t.id === 'Database' || t.id === 'AI/ML') {
+                              setSelectedRole(`${t.id} Engineer`);
+                              setSelectedRound('technical_stack');
+                            } else if (t.id === 'HR') {
+                              setSelectedRound('hiring_manager');
+                            } else if (t.id === 'Technical') {
+                              setSelectedRole('Software Development Engineer');
+                              setSelectedRound('project_deep_dive');
+                            }
                           }}
                           className={`p-4 rounded-2xl border-2 cursor-pointer transition-all ${
                             isSelected

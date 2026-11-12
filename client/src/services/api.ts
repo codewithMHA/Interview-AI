@@ -29,7 +29,11 @@ apiClient.interceptors.response.use(
   (response) => response,
   (error) => {
     const formattedError = {
-      message: error.response?.data?.message || error.message || 'An unexpected error occurred',
+      message:
+        error.response?.data?.error ||
+        error.response?.data?.message ||
+        error.message ||
+        'An unexpected error occurred',
       statusCode: error.response?.status || 500,
       data: error.response?.data,
     };

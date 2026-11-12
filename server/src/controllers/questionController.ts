@@ -3,6 +3,7 @@ import mongoose from 'mongoose';
 import { AuthenticatedRequest } from '../types/index.js';
 import { Question } from '../models/Question.js';
 import { UserQuestionStatus } from '../models/UserQuestionStatus.js';
+import { Profile } from '../models/Profile.js';
 import { getDBStatus } from '../config/db.js';
 import { devStore } from '../services/devStore.js';
 import { autoSeedDatabase } from '../utils/autoSeed.js';
@@ -265,18 +266,36 @@ export const toggleComplete = async (
       }
       await status.save();
 
+      const profile = await Profile.findOne({ user: userId });
+      if (profile) {
+        if (status.isCompleted) {
+          profile.xpPoints = (profile.xpPoints || 0) + 15;
+          profile.preparationScore = Math.min(100, (profile.preparationScore || 0) + 2);
+        } else {
+          profile.xpPoints = Math.max(0, (profile.xpPoints || 0) - 15);
+          profile.preparationScore = Math.max(0, (profile.preparationScore || 0) - 2);
+        }
+        profile.level = Math.floor(profile.xpPoints / 200) + 1;
+        await profile.save();
+      }
+
       res.status(200).json({
         success: true,
         message: status.isCompleted ? 'Marked as completed (+15 XP)' : 'Marked as incomplete',
         isCompleted: status.isCompleted,
+        xpPoints: profile?.xpPoints,
+        level: profile?.level,
         timestamp: new Date().toISOString(),
       });
     } else {
       const isCompleted = await devStore.toggleComplete(userId, id);
+      const profile = await devStore.getProfile(userId);
       res.status(200).json({
         success: true,
         message: isCompleted ? 'Marked as completed (+15 XP)' : 'Marked as incomplete',
         isCompleted,
+        xpPoints: profile?.xpPoints,
+        level: profile?.level,
         timestamp: new Date().toISOString(),
       });
     }
